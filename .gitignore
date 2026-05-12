@@ -1,0 +1,9 @@
+node_modules/
+
+# Local secrets and local documents never belong in a template's history.
+.env
+*.sqlite
+
+# Consumers of a template generate their own lockfiles.
+package-lock.json
+pnpm-lock.yaml
