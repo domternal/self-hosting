@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Entrypoint: configuration comes from the environment so the same code runs
-// locally, in Docker, or behind a process manager.
+// locally, in Docker, or behind a process manager. See .env.example.
 import { createCollabServer } from './src/create-server.mjs';
 
 const port = Number(process.env.PORT ?? '1234');
