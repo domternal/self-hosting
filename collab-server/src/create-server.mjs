@@ -16,11 +16,22 @@ const COLLAB_FIELD = 'default';
  * @param {number} options.port
  * @param {Set<string>} options.tokens Accepted authentication tokens.
  * @param {string} options.database SQLite file path, or ':memory:' for tests.
+ * @param {Set<string>} [options.readOnlyTokens] Tokens accepted for VIEWER
+ *   connections: the document syncs down normally, and the server drops every
+ *   DOCUMENT write coming back up this connection. Awareness (presence,
+ *   cursors) stays two-way so viewers appear in presence.
  * @param {boolean} [options.quiet] Suppress the Hocuspocus start banner.
  * @param {(fragment: Y.XmlFragment, documentName: string) => void | null} [options.seed]
  *   Fills brand-new documents; pass null to disable seeding.
  */
-export function createCollabServer({ port, tokens, database, quiet = false, seed = seedWelcome }) {
+export function createCollabServer({
+  port,
+  tokens,
+  database,
+  readOnlyTokens = new Set(),
+  quiet = false,
+  seed = seedWelcome,
+}) {
   return new Server({
     port,
     quiet,
@@ -31,7 +42,18 @@ export function createCollabServer({ port, tokens, database, quiet = false, seed
     // verify a JWT, hit your session table, and authorize `documentName`
     // (with tenant-scoped names such as "tenant-a/report-42" that is a
     // prefix comparison against the token's tenant).
-    async onAuthenticate({ token, documentName }) {
+    async onAuthenticate({ token, documentName, connectionConfig }) {
+      if (readOnlyTokens.has(token)) {
+        // Server-enforced viewer role. `editable: false` on the client is a
+        // courtesy for the UI; THIS line is the enforcement for the
+        // DOCUMENT: Hocuspocus drops sync writes from a read-only
+        // connection, so a tampered client cannot change content. Awareness
+        // (presence, cursors) is NOT gated by it, deliberately here, since
+        // viewers should appear in presence; a hostile viewer could abuse
+        // that channel, which the client presence UI caps and sanitizes.
+        connectionConfig.readOnly = true;
+        return { token, readOnly: true };
+      }
       if (!tokens.has(token)) {
         throw new Error(`Invalid authentication token for "${documentName}"`);
       }

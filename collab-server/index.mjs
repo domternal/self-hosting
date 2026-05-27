@@ -17,11 +17,14 @@ function tokenSet(raw) {
 }
 
 const tokens = tokenSet(process.env.COLLAB_TOKENS);
+// Optional viewer tokens: connections authenticating with one of these get
+// the document read-only, enforced server-side.
+const readOnlyTokens = tokenSet(process.env.COLLAB_READONLY_TOKENS);
 
 if (tokens.size === 0) {
   console.error('Set COLLAB_TOKENS to at least one accepted token (comma separated).');
   process.exit(1);
 }
 
-const server = createCollabServer({ port, tokens, database });
+const server = createCollabServer({ port, tokens, database, readOnlyTokens });
 server.listen();

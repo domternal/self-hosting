@@ -5,6 +5,7 @@ A minimal, production-shaped [Hocuspocus](https://hocuspocus.dev) v4 server for 
 What it does:
 
 - **Authentication**: every connecting client must present a token (`HocuspocusProvider({ token })`). The example accepts tokens from the `COLLAB_TOKENS` env list; replace the lookup in `src/create-server.mjs` with your real check (verify a JWT, hit your session store) and authorize the requested document name there. With tenant-scoped names such as `tenant-a/report-42` that is a prefix comparison.
+- **Read-only viewers**: tokens listed in `COLLAB_READONLY_TOKENS` connect with `connectionConfig.readOnly` set, so the document syncs down and the server drops every document write from that connection. Client-side `editable: false` is UX on top; the enforcement is here. Awareness (presence, cursors) is deliberately not gated, viewers should appear in presence; the client presence UI caps and sanitizes whatever arrives on that channel.
 - **Persistence**: documents are stored in SQLite via `@hocuspocus/extension-sqlite`. Swap it for `@hocuspocus/extension-database` with your own `fetch`/`store` to use Postgres or anything else.
 - **Seeding**: brand-new documents get initial content in `onLoadDocument`, built directly as Y.Xml nodes (no ProseMirror schema needed server-side). Collaborative editors must not pass initial `content` client-side; the server owns it.
 
