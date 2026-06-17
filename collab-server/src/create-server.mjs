@@ -82,12 +82,15 @@ export function createCollabServer({
       notify?.('document.changed', { documentName });
     },
 
-    async connected({ documentName }) {
-      notify?.('client.connected', { documentName });
+    // NEVER forward `context` here: it holds the client's bearer token (the
+    // onAuthenticate return value), and a webhook body is exactly the kind
+    // of payload that ends up in third-party logs. Ship derived facts only.
+    async connected({ documentName, context }) {
+      notify?.('client.connected', { documentName, readOnly: context?.readOnly === true });
     },
 
-    async onDisconnect({ documentName }) {
-      notify?.('client.disconnected', { documentName });
+    async onDisconnect({ documentName, context }) {
+      notify?.('client.disconnected', { documentName, readOnly: context?.readOnly === true });
     },
 
     extensions: [new SQLite({ database })],

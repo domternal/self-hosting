@@ -30,6 +30,12 @@ if (tokens.size === 0) {
 const webhook = process.env.WEBHOOK_URL
   ? { url: process.env.WEBHOOK_URL, secret: process.env.WEBHOOK_SECRET ?? '' }
   : null;
+if (webhook && !webhook.secret) {
+  // A forgotten secret must not fail silently: the operator believes these
+  // deliveries are signed, and the receiver has no way to tell forgeries
+  // apart from real events.
+  console.warn('WEBHOOK_URL is set without WEBHOOK_SECRET: deliveries go out UNSIGNED.');
+}
 
 const server = createCollabServer({ port, tokens, database, readOnlyTokens, webhook });
 server.listen();
