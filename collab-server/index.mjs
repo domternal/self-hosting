@@ -26,5 +26,10 @@ if (tokens.size === 0) {
   process.exit(1);
 }
 
-const server = createCollabServer({ port, tokens, database, readOnlyTokens });
+// Optional webhook receiver for signed lifecycle events.
+const webhook = process.env.WEBHOOK_URL
+  ? { url: process.env.WEBHOOK_URL, secret: process.env.WEBHOOK_SECRET ?? '' }
+  : null;
+
+const server = createCollabServer({ port, tokens, database, readOnlyTokens, webhook });
 server.listen();

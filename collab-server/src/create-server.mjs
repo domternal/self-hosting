@@ -4,6 +4,7 @@
 import { Server } from '@hocuspocus/server';
 import { SQLite } from '@hocuspocus/extension-sqlite';
 import * as Y from 'yjs';
+import { createWebhookNotifier } from './webhook.mjs';
 
 // Matches DEFAULT_COLLAB_FIELD in @domternal-pro/extension-collaboration (the
 // Collaboration extension's `field` default). If you change one side, change
@@ -20,6 +21,9 @@ const COLLAB_FIELD = 'default';
  *   connections: the document syncs down normally, and the server drops every
  *   DOCUMENT write coming back up this connection. Awareness (presence,
  *   cursors) stays two-way so viewers appear in presence.
+ * @param {{ url: string, secret?: string } | null} [options.webhook] POSTs
+ *   signed lifecycle events (document.changed, client.connected,
+ *   client.disconnected) to your endpoint; null disables it.
  * @param {boolean} [options.quiet] Suppress the Hocuspocus start banner.
  * @param {(fragment: Y.XmlFragment, documentName: string) => void | null} [options.seed]
  *   Fills brand-new documents; pass null to disable seeding.
@@ -29,9 +33,11 @@ export function createCollabServer({
   tokens,
   database,
   readOnlyTokens = new Set(),
+  webhook = null,
   quiet = false,
   seed = seedWelcome,
 }) {
+  const notify = webhook ? createWebhookNotifier({ ...webhook, quiet }) : null;
   return new Server({
     port,
     quiet,
@@ -69,6 +75,19 @@ export function createCollabServer({
         seed(fragment, documentName);
       }
       return document;
+    },
+
+    // Runs debounced after changes persist.
+    async onStoreDocument({ documentName }) {
+      notify?.('document.changed', { documentName });
+    },
+
+    async connected({ documentName }) {
+      notify?.('client.connected', { documentName });
+    },
+
+    async onDisconnect({ documentName }) {
+      notify?.('client.disconnected', { documentName });
     },
 
     extensions: [new SQLite({ database })],
