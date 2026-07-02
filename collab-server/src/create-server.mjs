@@ -69,7 +69,15 @@ export function createCollabServer({
 
     // Runs after the SQLite extension restored any stored state, so an empty
     // fragment really is a brand-new document.
-    async onLoadDocument({ document, documentName }) {
+    async onLoadDocument({ document, documentName, context }) {
+      // REST access opens direct connections with { rest: true } context.
+      // A GET of a name nobody has opened yet must stay a read: seeding
+      // here would let any read-only token materialize and persist welcome
+      // content, and would let reads create documents. The websocket path
+      // owns seeding.
+      if (context?.rest === true) {
+        return document;
+      }
       const fragment = document.getXmlFragment(COLLAB_FIELD);
       if (seed && fragment.length === 0) {
         seed(fragment, documentName);

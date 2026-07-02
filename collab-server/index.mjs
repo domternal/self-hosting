@@ -2,6 +2,7 @@
 // Entrypoint: configuration comes from the environment so the same code runs
 // locally, in Docker, or behind a process manager. See .env.example.
 import { createCollabServer } from './src/create-server.mjs';
+import { createRestServer } from './src/rest.mjs';
 
 const port = Number(process.env.PORT ?? '1234');
 const database = process.env.SQLITE_PATH ?? 'collab.sqlite';
@@ -39,3 +40,16 @@ if (webhook && !webhook.secret) {
 
 const server = createCollabServer({ port, tokens, database, readOnlyTokens, webhook });
 server.listen();
+
+// Optional REST API on its own port, sharing the same Hocuspocus instance
+// and persistence (see src/rest.mjs for the routes). Node binds ALL
+// interfaces when no host is given, so the host is always passed: loopback
+// by default, wider only when REST_HOST says so deliberately.
+const restPort = Number(process.env.REST_PORT ?? '0');
+const restHost = process.env.REST_HOST ?? '127.0.0.1';
+if (restPort > 0) {
+  const rest = createRestServer({ collabServer: server, tokens, readOnlyTokens });
+  rest.listen(restPort, restHost, () => {
+    console.log(`REST API listening on http://${restHost}:${String(restPort)}`);
+  });
+}

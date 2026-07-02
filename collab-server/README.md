@@ -11,6 +11,8 @@ What it does:
 
 - **Webhooks** (optional, `WEBHOOK_URL`): HMAC-signed `document.changed` / `client.connected` / `client.disconnected` events via `src/webhook.mjs`, each body timestamped (`sentAt`) so receivers can refuse replays. Set `WEBHOOK_SECRET` or the server warns at startup that deliveries go out unsigned. Payloads carry derived facts only, never auth context. Deliberately not `@hocuspocus/extension-webhook`, whose transformer dependency ships the whole @tiptap editor server-side.
 
+- **REST API** (optional, `REST_PORT`): read documents as ProseMirror JSON or export the raw Yjs update. Routes in `src/rest.mjs`; auth uses the same tokens as bearer headers, and `authorizeDocument` in there is the per-document hook to replace for multi-tenant use. Binds to `127.0.0.1` by default; set `REST_HOST` to expose it deliberately. REST reads never seed: a GET of a name nobody has opened yet returns an empty document, and only the websocket path plants welcome content.
+
 ## Run
 
 ```bash
