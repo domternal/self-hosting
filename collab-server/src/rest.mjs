@@ -55,6 +55,8 @@ function authorizeDocument(token, documentName, mode) {
  * - GET  /documents/{name}                        ProseMirror JSON
  * - GET  /documents/{name}/update                 full state as base64 Yjs update
  * - POST /documents/{name}/update  {"update"}     apply a base64 Yjs update
+ * - GET  /documents/{name}/versions               version metadata list
+ * - GET  /documents/{name}/versions/{id}/update   one version's snapshot as base64
  */
 export function createRestServer({ collabServer, tokens, readOnlyTokens = new Set() }) {
   /** @param {string} name @param {(doc: import('yjs').Doc) => unknown} read */
@@ -168,6 +170,54 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
             Y.applyUpdate(document, update);
           });
           json(res, 200, { name, applied: true });
+          return;
+        }
+      }
+
+      // Version snapshots live in the sibling document the version store
+      // syncs under a derived name; entries are Y.Maps holding metadata plus
+      // the full-state blob captured at save time.
+      if (rest[0] === 'versions' && req.method === 'GET') {
+        const versionsDoc = `${name}-versions`;
+
+        // GET /documents/{name}/versions
+        if (rest.length === 1) {
+          const versions = await withDocument(versionsDoc, (document) =>
+            document
+              .getArray('versions')
+              .toArray()
+              .map((entry) => ({
+                id: entry.get('id'),
+                name: entry.get('name'),
+                createdAt: entry.get('createdAt'),
+                authors: entry.get('authors'),
+                trigger: entry.get('trigger'),
+                restoredFrom: entry.get('restoredFrom'),
+                metadata: entry.get('metadata'),
+              }))
+          );
+          json(res, 200, { name, versions });
+          return;
+        }
+
+        // GET /documents/{name}/versions/{id}/update
+        // The raw Yjs binary of one version: feed it to Y.applyUpdate on an
+        // empty Y.Doc client-side to materialize, diff or export that state.
+        if (rest.length === 3 && rest[2] === 'update') {
+          const versionId = rest[1];
+          const update = await withDocument(versionsDoc, (document) => {
+            const entry = document
+              .getArray('versions')
+              .toArray()
+              .find((candidate) => candidate.get('id') === versionId);
+            const blob = entry?.get('blob');
+            return blob ? Buffer.from(blob).toString('base64') : null;
+          });
+          if (update === null) {
+            json(res, 404, { error: `Unknown version "${versionId}"` });
+            return;
+          }
+          json(res, 200, { name, versionId, update });
           return;
         }
       }
