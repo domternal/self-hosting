@@ -3,6 +3,7 @@
 // tests, or a managed multi-tenant deployment.
 import { Server } from '@hocuspocus/server';
 import { SQLite } from '@hocuspocus/extension-sqlite';
+import { collectThreadGarbage } from '@domternal-pro/extension-comments/yjs';
 import * as Y from 'yjs';
 import { createWebhookNotifier } from './webhook.mjs';
 
@@ -11,6 +12,15 @@ import { createWebhookNotifier } from './webhook.mjs';
 // the other, and pass it explicitly to y-prosemirror helpers such as
 // prosemirrorJSONToYDoc, whose own default is 'prosemirror'.
 const COLLAB_FIELD = 'default';
+
+// The Y.Map comment threads live in; must match the map handed to the
+// client's YjsThreadStore (the playgrounds use ydoc.getMap('comments')).
+const COMMENTS_MAP = 'comments';
+
+/** @param {string} documentName */
+function isVersionSibling(documentName) {
+  return documentName.endsWith('-versions') || documentName.endsWith('/versions');
+}
 
 /**
  * @param {object} options
@@ -78,6 +88,11 @@ export function createCollabServer({
       if (context?.rest === true) {
         return document;
       }
+      // Sibling documents that carry version snapshots hold no prose; welcome
+      // content in them would be junk next to the version data.
+      if (isVersionSibling(documentName)) {
+        return document;
+      }
       const fragment = document.getXmlFragment(COLLAB_FIELD);
       if (seed && fragment.length === 0) {
         seed(fragment, documentName);
@@ -85,8 +100,15 @@ export function createCollabServer({
       return document;
     },
 
-    // Runs debounced after changes persist.
-    async onStoreDocument({ documentName }) {
+    // Runs debounced after changes persist. Comment deletes under
+    // collaboration are CRDT-safe tombstones (removing an entry outright on a
+    // client would let a concurrent reply resurrect it); the server is the
+    // one authority that may physically reclaim them, and this hook is where.
+    // Without it, deleted threads accumulate in the document forever.
+    async onStoreDocument({ document, documentName }) {
+      if (!isVersionSibling(documentName)) {
+        collectThreadGarbage(document.getMap(COMMENTS_MAP));
+      }
       notify?.('document.changed', { documentName });
     },
 

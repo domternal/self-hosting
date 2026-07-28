@@ -9,6 +9,7 @@ What it does:
 - **Persistence**: documents are stored in SQLite via `@hocuspocus/extension-sqlite`. Swap it for `@hocuspocus/extension-database` with your own `fetch`/`store` to use Postgres or anything else.
 - **Seeding**: brand-new documents get initial content in `onLoadDocument`, built directly as Y.Xml nodes (no ProseMirror schema needed server-side). Collaborative editors must not pass initial `content` client-side; the server owns it.
 
+- **Comment-thread garbage collection**: comment deletes under collaboration are CRDT-safe tombstones; `onStoreDocument` runs `collectThreadGarbage` so the server (the one safe authority) physically reclaims them. Without this, deleted threads accumulate in the document forever.
 - **Webhooks** (optional, `WEBHOOK_URL`): HMAC-signed `document.changed` / `client.connected` / `client.disconnected` events via `src/webhook.mjs`, each body timestamped (`sentAt`) so receivers can refuse replays. Set `WEBHOOK_SECRET` or the server warns at startup that deliveries go out unsigned. Payloads carry derived facts only, never auth context. Deliberately not `@hocuspocus/extension-webhook`, whose transformer dependency ships the whole @tiptap editor server-side.
 
 - **REST API** (optional, `REST_PORT`): read documents as ProseMirror JSON, export or apply raw Yjs updates, list versions and fetch any version's snapshot binary. Routes in `src/rest.mjs`; auth uses the same tokens as bearer headers, and `authorizeDocument` in there is the per-document hook to replace for multi-tenant use. Binds to `127.0.0.1` by default; set `REST_HOST` to expose it deliberately. REST reads never seed: a GET of a name nobody has opened yet returns an empty document, and only the websocket path plants welcome content. Note that applying a full fresh-document state MERGES it next to existing content (CRDT semantics); see the note in `src/rest.mjs`.
@@ -21,7 +22,7 @@ cp .env.example .env   # then edit COLLAB_TOKENS
 node --env-file=.env index.mjs
 ```
 
-Requires Node >= 22.
+Requires Node >= 22. The `@domternal-pro/extension-comments` dependency installs from the public npm registry like every Domternal Pro package.
 
 For a token-free throwaway document server during evaluation there is also `npx @hocuspocus/cli@4 --port 1234 --sqlite`; this server is the production-shaped one.
 
