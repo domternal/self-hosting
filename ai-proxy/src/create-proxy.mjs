@@ -1,0 +1,210 @@
+// Reusable AI proxy factory. All configuration comes in as options (no
+// process.env in here), so the same module can back the local entrypoint,
+// tests, or a route inside your own server framework.
+//
+// The job is deliberately small: hold the provider API key server-side,
+// check that the caller is one of YOUR users, and stream the reply back.
+// A key shipped to arbitrary browsers is compromised by definition; this
+// proxy is the recommended alternative. The editor already speaks the
+// provider's wire dialect (openai-chat or anthropic-messages), so request
+// bodies pass through untouched and the proxy stays protocol-agnostic.
+//
+// Nothing here logs request or response bodies: prompts carry your users'
+// document text. Keep it that way in your own edits; if you need
+// observability, log status codes and durations, never content.
+import { createServer } from 'node:http';
+import { Readable } from 'node:stream';
+
+// Request-body ceiling: prompts ride along with document context, but stay
+// far below this; one token holder must not be able to buffer the process
+// into the ground.
+const BODY_LIMIT_BYTES = 1024 * 1024;
+
+/**
+ * Auth header shape per provider family. 'none' is for local models
+ * (Ollama, LM Studio, vLLM) that take no key.
+ * @param {'openai' | 'anthropic' | 'none'} provider
+ * @param {string} apiKey
+ */
+function providerHeaders(provider, apiKey) {
+  if (provider === 'openai') return { authorization: `Bearer ${apiKey}` };
+  if (provider === 'anthropic') return { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' };
+  return {};
+}
+
+/**
+ * Caller authorization, run on every request. The default accepts the
+ * static token list from the environment: your app sends one of them as
+ * "Authorization: Bearer <token>" (the editor's `headers` option takes an
+ * async function, so a short-lived session token works too). Replace the
+ * body with your real check (verify a JWT, hit your session store); the
+ * incoming string is whatever your app put in that header.
+ *
+ * @param {string} token
+ * @param {Set<string>} tokens
+ */
+function authorizeRequest(token, tokens) {
+  return tokens.has(token);
+}
+
+/**
+ * @param {object} options
+ * @param {string} options.upstreamUrl Full provider or gateway endpoint,
+ *   e.g. https://api.openai.com/v1/chat/completions
+ * @param {'openai' | 'anthropic' | 'none'} [options.provider] Which auth
+ *   header the upstream expects. Default 'openai'.
+ * @param {string} [options.apiKey] Provider API key; stays on this server.
+ * @param {Set<string>} options.tokens Accepted caller tokens.
+ * @param {Set<string>} [options.allowedOrigins] Browser origins allowed to
+ *   call the proxy cross-origin. Empty means same-origin deployment: no
+ *   CORS headers are emitted at all, which is the safest default.
+ * @param {number} [options.requestTimeoutMs] Upstream cutoff. Default 120s,
+ *   generous because reasoning models stream slowly at the start.
+ */
+export function createAiProxy({
+  upstreamUrl,
+  provider = 'openai',
+  apiKey = '',
+  tokens,
+  allowedOrigins = new Set(),
+  requestTimeoutMs = 120_000,
+}) {
+  /** @param {string | undefined} origin */
+  function corsHeaders(origin) {
+    if (origin === undefined || !allowedOrigins.has(origin)) return {};
+    // Reflect only origins from the allow list, never '*': the responses
+    // are per-user and the request carries credentials.
+    return { 'access-control-allow-origin': origin, vary: 'origin' };
+  }
+
+  /** @param {import('node:http').ServerResponse} res */
+  function json(res, status, extraHeaders, body) {
+    if (res.destroyed || res.writableEnded || res.headersSent) return;
+    res.writeHead(status, { 'content-type': 'application/json', ...extraHeaders });
+    res.end(JSON.stringify(body));
+  }
+
+  /** @param {import('node:http').IncomingMessage} req */
+  function readBody(req) {
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      let received = 0;
+      req.on('data', (chunk) => {
+        received += chunk.length;
+        if (received > BODY_LIMIT_BYTES) {
+          // Destroying mid-stream tears down the socket, so the caller sees
+          // a reset rather than a polite 413: answering politely would mean
+          // reading the rest of an oversized body first, which is the exact
+          // thing the limit exists to refuse.
+          const error = new Error('Request body too large');
+          error.statusCode = 413;
+          req.destroy(error);
+          reject(error);
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('end', () => {
+        resolve(Buffer.concat(chunks));
+      });
+      req.on('error', reject);
+    });
+  }
+
+  return createServer((req, res) => {
+    // Computed outside the async flow so the error handler below can attach
+    // it too: a cross-origin caller cannot read an error body that arrives
+    // without the allow-origin header.
+    const cors = corsHeaders(req.headers.origin);
+    void (async () => {
+      // Preflight: the editor sends JSON with an Authorization header, so
+      // cross-origin browsers ask first. Same-origin setups never get here.
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+          ...cors,
+          'access-control-allow-methods': 'POST',
+          'access-control-allow-headers': 'authorization, content-type',
+          'access-control-max-age': '86400',
+        });
+        res.end();
+        return;
+      }
+      if (req.method !== 'POST') {
+        json(res, 405, cors, { error: 'POST only' });
+        return;
+      }
+
+      const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+      if (!authorizeRequest(token, tokens)) {
+        json(res, 401, cors, { error: 'Missing or invalid bearer token' });
+        return;
+      }
+
+      const body = await readBody(req);
+
+      // The upstream request is built from scratch: the caller's headers are
+      // never forwarded, so the session token above and any cookies cannot
+      // leak to the provider. Only the provider auth from THIS server's
+      // configuration goes out.
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+      // A reader who closed the tab must not keep provider tokens burning.
+      res.on('close', () => controller.abort());
+
+      let upstream;
+      try {
+        upstream = await fetch(upstreamUrl, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'text/event-stream, application/json',
+            ...providerHeaders(provider, apiKey),
+          },
+          body,
+          signal: controller.signal,
+        });
+      } catch (error) {
+        clearTimeout(timeout);
+        const timedOut = controller.signal.aborted && !res.destroyed;
+        json(res, timedOut ? 504 : 502, cors, {
+          error: timedOut ? 'Upstream timed out' : 'Upstream unreachable',
+        });
+        return;
+      }
+
+      // Status and content type pass through untouched, so provider errors
+      // reach the editor transport, which already maps them for the UI.
+      res.writeHead(upstream.status, {
+        ...cors,
+        'content-type': upstream.headers.get('content-type') ?? 'application/json',
+        'cache-control': 'no-store',
+      });
+
+      if (upstream.body === null) {
+        clearTimeout(timeout);
+        res.end();
+        return;
+      }
+      try {
+        // Chunk-by-chunk relay with backpressure; buffering the whole reply
+        // would defeat streaming, which is the point of the endpoint.
+        await new Promise((resolve, reject) => {
+          const stream = Readable.fromWeb(upstream.body);
+          stream.pipe(res);
+          stream.on('error', reject);
+          res.on('finish', resolve);
+          res.on('close', resolve);
+        });
+      } finally {
+        clearTimeout(timeout);
+        if (!res.writableEnded) res.end();
+      }
+    })().catch((error) => {
+      const status = typeof error?.statusCode === 'number' ? error.statusCode : 500;
+      if (!res.headersSent && !res.destroyed) {
+        res.writeHead(status, { 'content-type': 'application/json', ...cors });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+    });
+  });
+}

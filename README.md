@@ -5,5 +5,6 @@ Reference backends for [Domternal Pro](https://domternal.dev/pro/): the parts th
 | Directory | What it is |
 | --- | --- |
 | [`collab-server/`](./collab-server) | A production-shaped [Hocuspocus](https://hocuspocus.dev) v4 server for real-time collaboration |
+| [`ai-proxy/`](./ai-proxy) | A zero-dependency streaming proxy that keeps your AI provider key server-side |
 
 MIT licensed.
