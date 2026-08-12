@@ -9,6 +9,8 @@ Reference backends for [Domternal Pro](https://domternal.dev/pro/): the parts th
 
 Everything else in Domternal Pro (columns, export, the editor itself) is client-only and needs no backend at all.
 
+Each directory is self-contained and carries its own README with the full walkthrough, so copying one directory into your project takes its documentation along. This page orients you and gets both services running.
+
 ## Try collaboration in 30 seconds
 
 For a throwaway document server during evaluation, skip this repository entirely:
@@ -21,7 +23,9 @@ That is a generic relay: fine for trying the editor, not for production. It does
 
 ## Quick start
 
-Use this repository as a GitHub template (or clone it), then per service:
+Use this repository as a GitHub template (or clone it), then set up each service.
+
+The collaboration server, with the full walkthrough in [`collab-server/README.md`](./collab-server/README.md):
 
 ```bash
 cd collab-server
@@ -29,6 +33,8 @@ npm install
 cp .env.example .env   # then edit the tokens
 node --env-file=.env index.mjs
 ```
+
+The AI proxy, with the full walkthrough in [`ai-proxy/README.md`](./ai-proxy/README.md):
 
 ```bash
 cd ai-proxy
@@ -56,4 +62,4 @@ Both services refuse to start with placeholder tokens when `NODE_ENV=production`
 
 ## Support and license
 
-This repository is MIT licensed and provided as is: it is a starting point you own and adapt, not a managed product, and it is not covered by Domternal Pro support plans, which cover the editor packages. The full guide lives in the [self-hosting documentation](https://domternal.dev/v1/pro/self-hosting/); problems and suggestions are welcome on the [issue tracker](https://github.com/domternal/domternal/issues).
+This repository is MIT licensed and provided as is: it is a starting point you own and adapt, not a managed product, and it is not covered by Domternal Pro support plans, which cover the editor packages. The full guide lives in the [self-hosting documentation](https://domternal.dev/v1/pro/self-hosting/), and problems and suggestions are welcome on the [issue tracker](https://github.com/domternal/domternal/issues).

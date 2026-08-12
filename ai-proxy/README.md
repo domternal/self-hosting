@@ -22,6 +22,17 @@ node --env-file=.env index.mjs
 
 Requires Node >= 22. There is nothing to install. The proxy binds to `127.0.0.1` by default; set `HOST` to expose it deliberately (the Docker setup does).
 
+Check it works before wiring the editor (openai-chat dialect shown; send one of your `AI_TOKENS` values):
+
+```bash
+curl -sN -X POST http://127.0.0.1:1250/ \
+  -H "authorization: Bearer change-me" \
+  -H "content-type: application/json" \
+  -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Say hi"}]}'
+```
+
+The reply streams back as `data:` lines. A provider error passes through with its original status and body, so a wrong key or model name is diagnosed from this one command.
+
 ## Wire the editor to it
 
 ```ts
