@@ -13,6 +13,10 @@ What it does:
 
 What it deliberately does not do: rate limiting and usage quotas belong in your gateway or in the session check you plug in, where you know who the user is.
 
+The static `AI_TOKENS` list gets you running, and it is the first thing to replace. It reaches the browser, so any user can read it out of the network panel and spend your provider budget from a script, and withdrawing it cuts off every user at once. A per-user session check in `authorizeRequest` fixes both, and it is what makes limits and quotas possible at all, since a limit has to know who is calling. The "Replace the token check" section below shows two ready swaps.
+
+You may not need to deploy this as a service. The editor asks for one thing: a URL that speaks `openai-chat` or `anthropic-messages`. If you already run a backend, the same job is one route inside it, and this directory then serves as a reference for what that route has to get right (authenticate the caller, build the upstream request from scratch, stream the reply, cap the body, time out, log no bodies) rather than as something to run alongside it.
+
 ## Run
 
 ```bash
@@ -49,6 +53,42 @@ Ai.configure({
 No `apiKey` on the client: the proxy adds provider auth server-side (`PROVIDER=openai` sends `Authorization: Bearer`, `PROVIDER=anthropic` sends `x-api-key` plus `anthropic-version`, `PROVIDER=none` sends nothing, for local models).
 
 Deploy the proxy on the same origin as your app when you can; that needs no CORS at all. Cross-origin setups list the exact app origins in `ALLOWED_ORIGINS`, which are reflected per request, never `*`.
+
+## Replace the token check
+
+`authorizeRequest` in `src/create-proxy.mjs` is the one spot to swap. It already runs inside an async handler, so an async replacement is a drop-in: make the function async and change the call site to `if (!(await authorizeRequest(token)))`.
+
+The most portable check asks your app whether the token belongs to a live session. It works unchanged with any auth setup (your own session table, Auth0, Clerk, Supabase), because all of them can expose a "who am I" endpoint:
+
+```js
+async function authorizeRequest(token) {
+  const response = await fetch('https://your.app/api/me', {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return response.ok;
+}
+```
+
+If your app issues JWTs, verify them locally instead and skip the per-request network hop. The import adds a dependency to your copy, which is fine: zero dependencies describes the reference as shipped, not a rule for your fork.
+
+```js
+import { jwtVerify } from 'jose';
+
+const secret = new TextEncoder().encode(process.env.SESSION_JWT_SECRET);
+
+async function authorizeRequest(token) {
+  try {
+    await jwtVerify(token, secret); // signature and expiry
+    return true;
+  } catch {
+    return false;
+  }
+}
+```
+
+For tokens signed by an identity provider (Auth0 and Clerk issue RS256), verify against their published keys with `createRemoteJWKSet` from the same package instead of a shared secret.
+
+Once a real check is in place, `AI_TOKENS` has no job left. This function is also where per-user rate limits and quotas belong, because it is the first line that knows who is calling.
 
 ## Local models
 

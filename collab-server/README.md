@@ -4,7 +4,7 @@ A minimal, production-shaped [Hocuspocus](https://hocuspocus.dev) v4 server for 
 
 What it does:
 
-- **Authentication**: every connecting client must present a token (`HocuspocusProvider({ token })`). The example accepts tokens from the `COLLAB_TOKENS` env list; replace the lookup in `src/create-server.mjs` with your real check (verify a JWT, hit your session store) and authorize the requested document name there. With tenant-scoped names such as `tenant-a/report-42` that is a prefix comparison.
+- **Authentication**: every connecting client must present a token (`HocuspocusProvider({ token })`). The example accepts tokens from the `COLLAB_TOKENS` env list; replace the lookup in `src/create-server.mjs` with your real check (verify a JWT, hit your session store) and authorize the requested document name there. With tenant-scoped names such as `tenant-a/report-42` that is a prefix comparison. The static list is for getting started: it reaches the browser, so one user can read it and connect to any document from a script, and withdrawing it disconnects everyone at once. The "Replace the token check" section below shows the swap.
 - **Read-only viewers**: tokens listed in `COLLAB_READONLY_TOKENS` connect with `connectionConfig.readOnly` set, so the document syncs down and the server drops every document write from that connection. Client-side `editable: false` is UX on top; the enforcement is here. Awareness (presence, cursors) is deliberately not gated, viewers should appear in presence; the client presence UI caps and sanitizes whatever arrives on that channel.
 - **Persistence**: documents are stored in SQLite via `@hocuspocus/extension-sqlite`. Swap it for `@hocuspocus/extension-database` with your own `fetch`/`store` to use Postgres or anything else.
 - **Seeding**: brand-new documents get initial content in `onLoadDocument`, built directly as Y.Xml nodes (no ProseMirror schema needed server-side). Collaborative editors must not pass initial `content` client-side; the server owns it.
@@ -35,6 +35,27 @@ const provider = new HocuspocusProvider({
   token: 'change-me',
 });
 ```
+
+## Replace the token check
+
+`onAuthenticate` in `src/create-server.mjs` is the spot. It is already async, and rejecting a connection means throwing. With JWTs that carry a tenant claim, verification, document authorization and the viewer role all fit in one hook:
+
+```js
+import { jwtVerify } from 'jose';
+
+const secret = new TextEncoder().encode(process.env.SESSION_JWT_SECRET);
+
+async onAuthenticate({ token, documentName, connectionConfig }) {
+  const { payload } = await jwtVerify(token, secret); // throws on a bad or expired token
+  if (!documentName.startsWith(`${payload.tenant}/`)) {
+    throw new Error('Not a document of this tenant');
+  }
+  connectionConfig.readOnly = payload.role === 'viewer'; // server-enforced, as before
+  return { userId: payload.sub }; // becomes `context` in every later hook
+},
+```
+
+If your app keeps sessions server-side instead, `fetch` your session endpoint with the token and throw unless it answers 200. Either way `COLLAB_TOKENS` and `COLLAB_READONLY_TOKENS` have no job left once this is in.
 
 ## Scaling notes
 

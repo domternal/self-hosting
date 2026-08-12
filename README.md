@@ -58,7 +58,7 @@ Each service isolates what you must replace in clearly marked spots:
 - **`collab-server`**: the token check in `src/create-server.mjs` (swap the static list for your JWT or session lookup, and authorize the document name), and `authorizeDocument` in `src/rest.mjs` for multi-tenant deployments. Persistence swaps the SQLite extension for your own database.
 - **`ai-proxy`**: the caller check in `src/create-proxy.mjs` (swap the static token list for your session check).
 
-Both services refuse to start with placeholder tokens when `NODE_ENV=production`, so a forgotten `change-me` fails loudly instead of shipping.
+Replace the token checks first. A static token list reaches the browser, so any user can read one out and use it outside your app, and withdrawing it cuts off everyone at once. Both services refuse to start with placeholder tokens when `NODE_ENV=production`, so a forgotten `change-me` fails loudly instead of shipping.
 
 ## Support and license
 
