@@ -27,6 +27,26 @@ if (tokens.size === 0) {
   process.exit(1);
 }
 
+// Placeholder tokens exist so the first local run works without ceremony.
+// In production the same convenience is a hole anyone can walk through, so
+// the server refuses to start rather than warn into a log nobody reads.
+const PLACEHOLDER_TOKENS = new Set(['change-me', 'change-me-too', 'dev-token', 'viewer-token']);
+const production = process.env.NODE_ENV === 'production';
+const placeholdersInUse = [...tokens, ...readOnlyTokens].filter((token) =>
+  PLACEHOLDER_TOKENS.has(token)
+);
+if (placeholdersInUse.length > 0) {
+  if (production) {
+    console.error(
+      `Refusing to start with placeholder tokens in production (${placeholdersInUse.join(', ')}). Set real secrets in COLLAB_TOKENS and COLLAB_READONLY_TOKENS.`
+    );
+    process.exit(1);
+  }
+  console.warn(
+    `[collab] Placeholder tokens in use (${placeholdersInUse.join(', ')}): fine locally, refused when NODE_ENV=production.`
+  );
+}
+
 // Optional webhook receiver for signed lifecycle events.
 const webhook = process.env.WEBHOOK_URL
   ? { url: process.env.WEBHOOK_URL, secret: process.env.WEBHOOK_SECRET ?? '' }
@@ -48,6 +68,14 @@ server.listen();
 const restPort = Number(process.env.REST_PORT ?? '0');
 const restHost = process.env.REST_HOST ?? '127.0.0.1';
 if (restPort > 0) {
+  if (restHost !== '127.0.0.1' && restHost !== 'localhost' && restHost !== '::1') {
+    // Wide binding is legitimate (Docker needs it), but it must never be an
+    // accident. The placeholder-token case needs no second check here: the
+    // guard above already refused to start in production.
+    console.warn(
+      `[rest] Binding ${restHost}: make sure the API is reachable only from networks you trust.`
+    );
+  }
   const rest = createRestServer({ collabServer: server, tokens, readOnlyTokens });
   rest.listen(restPort, restHost, () => {
     console.log(`REST API listening on http://${restHost}:${String(restPort)}`);

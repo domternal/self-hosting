@@ -28,11 +28,11 @@ const BODY_LIMIT_BYTES = 8 * 1024 * 1024;
 /**
  * Per-document authorization, called on every route AFTER token
  * authentication. The example accepts everything, which means ANY valid
- * token can read and write ANY document name: fine for a single-team
- * deployment, wrong for multi-tenant. Replace with your real check (with
- * tenant-scoped names such as "tenant-a/report-42" it is a prefix
- * comparison against the token's tenant), and keep it in sync with the
- * same check in onAuthenticate on the websocket side.
+ * token can read and write ANY document name, version siblings included:
+ * fine for a single-team deployment, wrong for multi-tenant. Replace with
+ * your real check (with tenant-scoped names such as "tenant-a/report-42" it
+ * is a prefix comparison against the token's tenant), and keep it in sync
+ * with the same check in onAuthenticate on the websocket side.
  *
  * @param {string} token
  * @param {string} documentName
@@ -59,6 +59,12 @@ function authorizeDocument(token, documentName, mode) {
  * - GET  /documents/{name}/versions/{id}/update   one version's snapshot as base64
  */
 export function createRestServer({ collabServer, tokens, readOnlyTokens = new Set() }) {
+  // Startup reminder that the placeholder above is in force. Delete this
+  // warning together with the placeholder when you implement the real check.
+  console.warn(
+    '[rest] authorizeDocument is the permissive placeholder: any valid token can reach any document. Replace it in src/rest.mjs before multi-tenant use.'
+  );
+
   /** @param {string} name @param {(doc: import('yjs').Doc) => unknown} read */
   async function withDocument(name, read) {
     const connection = await collabServer.hocuspocus.openDirectConnection(name, { rest: true });

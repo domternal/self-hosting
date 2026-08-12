@@ -1,0 +1,39 @@
+# Both reference backends, built locally from this repository. Compose fails
+# fast until the required secrets are set: put them in a .env file next to
+# this compose file. Both containers run with NODE_ENV=production, so the
+# placeholder-token guards are active and "change-me" values are refused.
+services:
+  collab-server:
+    build: ./collab-server
+    ports:
+      # Websocket for HocuspocusProvider.
+      - '1234:1234'
+      # REST API, published on loopback only; inside the container it must
+      # bind wide (0.0.0.0) for the port mapping to reach it.
+      - '127.0.0.1:1235:1235'
+    environment:
+      COLLAB_TOKENS: ${COLLAB_TOKENS:?set COLLAB_TOKENS to a comma-separated list of secrets}
+      COLLAB_READONLY_TOKENS: ${COLLAB_READONLY_TOKENS:-}
+      SQLITE_PATH: /data/collab.sqlite
+      REST_PORT: '1235'
+      REST_HOST: 0.0.0.0
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+    volumes:
+      - collab-data:/data
+
+  ai-proxy:
+    build: ./ai-proxy
+    ports:
+      - '1250:1250'
+    environment:
+      UPSTREAM_URL: ${UPSTREAM_URL:?set UPSTREAM_URL to your provider endpoint}
+      PROVIDER: ${PROVIDER:-openai}
+      PROVIDER_API_KEY: ${PROVIDER_API_KEY:-}
+      AI_TOKENS: ${AI_TOKENS:?set AI_TOKENS to a comma-separated list of secrets}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      # Container-internal wide bind; published on the host port above.
+      HOST: 0.0.0.0
+
+volumes:
+  collab-data:

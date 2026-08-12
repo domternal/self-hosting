@@ -1,6 +1,6 @@
 # Reference collaboration server
 
-A minimal, production-shaped [Hocuspocus](https://hocuspocus.dev) v4 server for Domternal Pro collaboration. Copy it into your project and adapt the marked spots; everything specific to your infrastructure is isolated in the auth check and the persistence extension.
+A minimal, production-shaped [Hocuspocus](https://hocuspocus.dev) v4 server for Domternal Pro collaboration. Copy it into your project and adapt the marked spots; everything specific to your infrastructure is isolated in the auth checks (the token lookup in `src/create-server.mjs`, and `authorizeDocument` in `src/rest.mjs` if you enable the REST API) and the persistence extension.
 
 What it does:
 
@@ -8,11 +8,10 @@ What it does:
 - **Read-only viewers**: tokens listed in `COLLAB_READONLY_TOKENS` connect with `connectionConfig.readOnly` set, so the document syncs down and the server drops every document write from that connection. Client-side `editable: false` is UX on top; the enforcement is here. Awareness (presence, cursors) is deliberately not gated, viewers should appear in presence; the client presence UI caps and sanitizes whatever arrives on that channel.
 - **Persistence**: documents are stored in SQLite via `@hocuspocus/extension-sqlite`. Swap it for `@hocuspocus/extension-database` with your own `fetch`/`store` to use Postgres or anything else.
 - **Seeding**: brand-new documents get initial content in `onLoadDocument`, built directly as Y.Xml nodes (no ProseMirror schema needed server-side). Collaborative editors must not pass initial `content` client-side; the server owns it.
-
 - **Comment-thread garbage collection**: comment deletes under collaboration are CRDT-safe tombstones; `onStoreDocument` runs `collectThreadGarbage` so the server (the one safe authority) physically reclaims them. Without this, deleted threads accumulate in the document forever.
 - **Webhooks** (optional, `WEBHOOK_URL`): HMAC-signed `document.changed` / `client.connected` / `client.disconnected` events via `src/webhook.mjs`, each body timestamped (`sentAt`) so receivers can refuse replays. Set `WEBHOOK_SECRET` or the server warns at startup that deliveries go out unsigned. Payloads carry derived facts only, never auth context. Deliberately not `@hocuspocus/extension-webhook`, whose transformer dependency ships the whole @tiptap editor server-side.
-
 - **REST API** (optional, `REST_PORT`): read documents as ProseMirror JSON, export or apply raw Yjs updates, list versions and fetch any version's snapshot binary. Routes in `src/rest.mjs`; auth uses the same tokens as bearer headers, and `authorizeDocument` in there is the per-document hook to replace for multi-tenant use. Binds to `127.0.0.1` by default; set `REST_HOST` to expose it deliberately. REST reads never seed: a GET of a name nobody has opened yet returns an empty document, and only the websocket path plants welcome content. Note that applying a full fresh-document state MERGES it next to existing content (CRDT semantics); see the note in `src/rest.mjs`.
+- **Production guards**: with `NODE_ENV=production` the server refuses to start with placeholder tokens (`change-me` and friends), and refuses to expose the REST API beyond loopback with them; without `NODE_ENV=production` the same conditions warn instead. The permissive `authorizeDocument` placeholder announces itself at startup until you replace it.
 
 ## Run
 
