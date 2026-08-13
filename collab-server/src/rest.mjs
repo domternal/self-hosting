@@ -65,9 +65,18 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
     '[rest] authorizeDocument is the permissive placeholder: any valid token can reach any document. Replace it in src/rest.mjs before multi-tenant use.'
   );
 
-  /** @param {string} name @param {(doc: import('yjs').Doc) => unknown} read */
-  async function withDocument(name, read) {
-    const connection = await collabServer.hocuspocus.openDirectConnection(name, { rest: true });
+  /**
+   * @param {string} name
+   * @param {(doc: import('yjs').Doc) => unknown} read
+   * @param {boolean} [mutates] Writers persist; readers must not. Closing a
+   *   direct connection always runs the store hooks, so without this flag a
+   *   GET of an unknown name would create and persist an empty document.
+   */
+  async function withDocument(name, read, mutates = false) {
+    const connection = await collabServer.hocuspocus.openDirectConnection(name, {
+      rest: true,
+      restRead: !mutates,
+    });
     try {
       let result;
       await connection.transact((document) => {
@@ -118,7 +127,12 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
     void (async () => {
       const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
       const canRead = tokens.has(token) || readOnlyTokens.has(token);
-      const canWrite = tokens.has(token);
+      // Read-only wins when a token appears in both sets, matching
+      // onAuthenticate on the websocket side. Without this the two surfaces
+      // disagree, and an operator who demotes an editor by adding their token
+      // to the viewer list (without removing it from the full list) leaves
+      // them full write access here while the editor UI goes read-only.
+      const canWrite = tokens.has(token) && !readOnlyTokens.has(token);
       if (!canRead) {
         json(res, 401, { error: 'Missing or invalid bearer token' });
         return;
@@ -161,20 +175,40 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
             json(res, 403, { error: 'Read-only token' });
             return;
           }
-          const body = JSON.parse((await readBody(req)) || '{}');
+          // Malformed input is the CALLER's error, so it must not fall
+          // through to the 500 handler: that would answer a bad request with
+          // a server error and leak the parser's internals in the body.
+          let body;
+          try {
+            body = JSON.parse((await readBody(req)) || '{}');
+          } catch {
+            json(res, 400, { error: 'Body must be valid JSON' });
+            return;
+          }
           if (typeof body.update !== 'string') {
             json(res, 400, { error: 'Body must be {"update": "<base64 Yjs update>"}' });
             return;
           }
           const update = Buffer.from(body.update, 'base64');
-          await withDocument(name, (document) => {
-            // No custom origin: this runs inside connection.transact, whose
-            // already-open transaction (origin { source: 'local' }) absorbs
-            // the apply, so a third argument here would be silently ignored.
-            // Distinguish REST writes by the direct connection's context
-            // ({ rest: true }, see withDocument) in your hooks instead.
-            Y.applyUpdate(document, update);
-          });
+          try {
+            await withDocument(
+              name,
+              (document) => {
+                // No custom origin: this runs inside connection.transact, whose
+                // already-open transaction (origin { source: 'local' }) absorbs
+                // the apply, so a third argument here would be silently ignored.
+                // Distinguish REST writes by the direct connection's context
+                // ({ rest: true }, see withDocument) in your hooks instead.
+                Y.applyUpdate(document, update);
+              },
+              true
+            );
+          } catch {
+            // Yjs throws its own internal errors on a corrupt update; those
+            // messages describe our dependency, not the caller's mistake.
+            json(res, 400, { error: 'Body is not a decodable Yjs update' });
+            return;
+          }
           json(res, 200, { name, applied: true });
           return;
         }

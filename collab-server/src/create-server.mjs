@@ -17,6 +17,10 @@ const COLLAB_FIELD = 'default';
 // client's YjsThreadStore (the playgrounds use ydoc.getMap('comments')).
 const COMMENTS_MAP = 'comments';
 
+// Server-owned bookkeeping that rides along in the document. Only the seeded
+// flag lives here today; the editor never reads this map.
+const META_MAP = 'serverMeta';
+
 /** @param {string} documentName */
 function isVersionSibling(documentName) {
   return documentName.endsWith('-versions') || documentName.endsWith('/versions');
@@ -51,6 +55,18 @@ export function createCollabServer({
   seed = seedWelcome,
 }) {
   const notify = webhook ? createWebhookNotifier({ ...webhook, quiet }) : null;
+
+  // Closing a direct connection always runs the store hooks, so a REST READ
+  // of a name nobody has opened would persist an empty document, letting a
+  // read-only token create rows at will. Reads mark their context and this
+  // wrapper skips the write for them; REST writes persist normally.
+  const persistence = new SQLite({ database });
+  const storeDocument = persistence.onStoreDocument?.bind(persistence);
+  if (storeDocument) {
+    persistence.onStoreDocument = async (payload) =>
+      payload.lastContext?.restRead === true ? undefined : storeDocument(payload);
+  }
+
   return new Server({
     port,
     address: host,
@@ -81,8 +97,8 @@ export function createCollabServer({
       return { token };
     },
 
-    // Runs after the SQLite extension restored any stored state, so an empty
-    // fragment really is a brand-new document.
+    // Runs after the SQLite extension restored any stored state, so the
+    // seeded flag below reflects what persistence actually holds.
     async onLoadDocument({ document, documentName, context }) {
       // REST access opens direct connections with { rest: true } context.
       // A GET of a name nobody has opened yet must stay a read: seeding
@@ -97,9 +113,14 @@ export function createCollabServer({
       if (isVersionSibling(documentName)) {
         return document;
       }
-      const fragment = document.getXmlFragment(COLLAB_FIELD);
-      if (seed && fragment.length === 0) {
-        seed(fragment, documentName);
+      // Brand-new is a stored FLAG, not an empty fragment: a user who clears
+      // the page on purpose also loads with a zero-length fragment, and a
+      // length test would re-inject the welcome content they just removed,
+      // then carry it into their exports, prints and version snapshots.
+      const meta = document.getMap(META_MAP);
+      if (seed && meta.get('seeded') !== true) {
+        seed(document.getXmlFragment(COLLAB_FIELD), documentName);
+        meta.set('seeded', true);
       }
       return document;
     },
@@ -109,25 +130,47 @@ export function createCollabServer({
     // client would let a concurrent reply resurrect it); the server is the
     // one authority that may physically reclaim them, and this hook is where.
     // Without it, deleted threads accumulate in the document forever.
-    async onStoreDocument({ document, documentName }) {
-      if (!isVersionSibling(documentName)) {
+    async onStoreDocument({ document, documentName, lastContext }) {
+      // Collect on every document. The suffix test that used to guard this
+      // call classified by NAME alone, so a real document called
+      // "handbook-versions" was never swept and kept deleted comment text in
+      // storage forever. On a genuine snapshot sibling the sweep is a no-op.
+      //
+      // Never let this throw: the threads map is peer-writable, and an
+      // exception here aborts the rest of the store hook, which strands
+      // deleted bodies in persistence, stops webhook deliveries, pins the
+      // document in memory and hangs graceful shutdown. The collector guards
+      // its own shapes now, so this is the second line of defence.
+      try {
         collectThreadGarbage(document.getMap(COMMENTS_MAP));
+      } catch (error) {
+        console.error(`[collab] comment garbage collection failed for "${documentName}":`, error);
       }
+      // A REST read opens a direct connection and closes it, which runs this
+      // hook. Announcing a change nobody made would drive every receiver's
+      // reindex and audit trail off pure reads.
+      if (lastContext?.restRead === true) return;
       notify?.('document.changed', { documentName });
     },
 
     // NEVER forward `context` here: it holds the client's bearer token (the
     // onAuthenticate return value), and a webhook body is exactly the kind
     // of payload that ends up in third-party logs. Ship derived facts only.
+    //
+    // REST connections are skipped in both: there is no client, and reporting
+    // one would put phantom sessions (with a meaningless readOnly flag) into
+    // the receiver's stream on every API call.
     async connected({ documentName, context }) {
+      if (context?.rest === true) return;
       notify?.('client.connected', { documentName, readOnly: context?.readOnly === true });
     },
 
     async onDisconnect({ documentName, context }) {
+      if (context?.rest === true) return;
       notify?.('client.disconnected', { documentName, readOnly: context?.readOnly === true });
     },
 
-    extensions: [new SQLite({ database })],
+    extensions: [persistence],
   });
 }
 

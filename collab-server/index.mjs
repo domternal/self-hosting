@@ -4,7 +4,25 @@
 import { createCollabServer } from './src/create-server.mjs';
 import { createRestServer } from './src/rest.mjs';
 
-const port = Number(process.env.PORT ?? '1234');
+/**
+ * Ports must fail loudly. A NaN reaches the listener as an invalid argument
+ * and dies with a raw stack, which reads like a crash rather than a typo.
+ *
+ * @param {string | undefined} raw
+ * @param {number} fallback
+ * @param {string} name
+ */
+function portOf(raw, fallback, name) {
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > 65535) {
+    console.error(`${name}="${raw}" is not a port number (0-65535).`);
+    process.exit(1);
+  }
+  return value;
+}
+
+const port = portOf(process.env.PORT, 1234, 'PORT');
 const database = process.env.SQLITE_PATH ?? 'collab.sqlite';
 
 /** @param {string | undefined} raw */
@@ -25,6 +43,17 @@ const readOnlyTokens = tokenSet(process.env.COLLAB_READONLY_TOKENS);
 if (tokens.size === 0) {
   console.error('Set COLLAB_TOKENS to at least one accepted token (comma separated).');
   process.exit(1);
+}
+
+// A token in both lists resolves to read-only on both surfaces, but silently:
+// the usual cause is demoting an editor to viewer and forgetting to remove the
+// old entry, and the operator deserves to hear that the full-access listing is
+// now dead weight rather than discover it during an incident.
+const overlapping = [...tokens].filter((token) => readOnlyTokens.has(token));
+if (overlapping.length > 0) {
+  console.warn(
+    `[collab] ${String(overlapping.length)} token(s) appear in both COLLAB_TOKENS and COLLAB_READONLY_TOKENS: they are treated as READ-ONLY. Remove them from COLLAB_TOKENS to make that explicit.`
+  );
 }
 
 // Placeholder tokens exist so the first local run works without ceremony.
@@ -81,7 +110,11 @@ server.listen();
 // and persistence (see src/rest.mjs for the routes). Node binds ALL
 // interfaces when no host is given, so the host is always passed: loopback
 // by default, wider only when REST_HOST says so deliberately.
-const restPort = Number(process.env.REST_PORT ?? '0');
+const restPort = portOf(process.env.REST_PORT, 0, 'REST_PORT');
+if (restPort > 0 && restPort === port) {
+  console.error(`REST_PORT (${String(restPort)}) must differ from PORT.`);
+  process.exit(1);
+}
 const restHost = process.env.REST_HOST ?? '127.0.0.1';
 if (restPort > 0) {
   if (restHost !== '127.0.0.1' && restHost !== 'localhost' && restHost !== '::1') {

@@ -16,9 +16,14 @@ import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 
 // Request-body ceiling: prompts ride along with document context, but stay
-// far below this; one token holder must not be able to buffer the process
+// far below this. One token holder must not be able to buffer the process
 // into the ground.
 const BODY_LIMIT_BYTES = 1024 * 1024;
+
+// The size cap alone is per request, so a caller could hold many connections
+// that announce a body and then stall, pinning one buffer each until Node's
+// 300 s default reaps them. Uploading a prompt takes well under this.
+const BODY_IDLE_MS = 20_000;
 
 /**
  * Auth header shape per provider family. 'none' is for local models
@@ -101,7 +106,26 @@ export function createAiProxy({
     return new Promise((resolve, reject) => {
       const chunks = [];
       let received = 0;
+      // Reaps a caller who announces a body and then goes quiet, so pinned
+      // buffers are bounded by how fast a client uploads rather than by how
+      // many connections it is willing to open.
+      /** @type {ReturnType<typeof setTimeout>} */
+      let idle;
+      const arm = () => {
+        idle = setTimeout(() => {
+          const error = new Error('Request body stalled');
+          error.statusCode = 408;
+          req.destroy(error);
+          reject(error);
+        }, BODY_IDLE_MS);
+      };
+      const settle = () => {
+        clearTimeout(idle);
+      };
+      arm();
       req.on('data', (chunk) => {
+        settle();
+        arm();
         received += chunk.length;
         if (received > BODY_LIMIT_BYTES) {
           // Destroying mid-stream tears down the socket, so the caller sees
@@ -117,9 +141,14 @@ export function createAiProxy({
         chunks.push(chunk);
       });
       req.on('end', () => {
+        settle();
         resolve(Buffer.concat(chunks));
       });
-      req.on('error', reject);
+      req.on('error', (error) => {
+        settle();
+        reject(error);
+      });
+      req.on('close', settle);
     });
   }
 
