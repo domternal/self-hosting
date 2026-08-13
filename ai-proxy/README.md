@@ -7,9 +7,9 @@ What it does:
 - **Caller authentication**: your app sends `Authorization: Bearer <token>` (the editor's `headers` option takes an async function, so short-lived session tokens work). The example checks the static `AI_TOKENS` list; replace the check in `src/create-proxy.mjs` with your real session lookup.
 - **Key isolation**: the upstream request is built from scratch. The caller's headers are never forwarded, so session tokens and cookies cannot leak to the provider, and the provider key never reaches the browser.
 - **Streaming passthrough**: request bodies pass through untouched in whichever wire dialect the editor speaks (`openai-chat` or `anthropic-messages`), and the SSE reply streams back chunk by chunk with backpressure. Provider errors pass through with their status, so the editor's transport maps them for the UI.
-- **Limits**: a 1 MB request-body cap, an upstream timeout (120 s default), and an abort when the reader closes the tab, so nobody keeps provider tokens burning for a closed window.
+- **Limits**: a 1 MB request-body cap, an upstream timeout (120 s default, `REQUEST_TIMEOUT_MS` overrides it: slow local models can need more), and an abort when the reader closes the tab, so nobody keeps provider tokens burning for a closed window.
 - **No content logging**: nothing here logs request or response bodies, because prompts carry your users' document text. Keep it that way in your edits; log status codes and durations if you need observability.
-- **Production guards**: with `NODE_ENV=production` the proxy refuses to start with placeholder tokens, and refuses to start with no tokens at all unless `AI_ALLOW_UNAUTHENTICATED=1` says a gateway in front of it authenticates every request.
+- **Production guards**: with `NODE_ENV=production` the proxy refuses to start with placeholder tokens, and refuses to start with no tokens at all unless `AI_ALLOW_UNAUTHENTICATED=1` says a gateway in front of it authenticates every request. An empty `AI_TOKENS` accepts every caller, which is exactly the state that flag opts into.
 
 What it deliberately does not do: rate limiting and usage quotas belong in your gateway or in the session check you plug in, where you know who the user is.
 
@@ -35,7 +35,7 @@ curl -sN -X POST http://127.0.0.1:1250/ \
   -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Say hi"}]}'
 ```
 
-The reply streams back as `data:` lines. A provider error passes through with its original status and body, so a wrong key or model name is diagnosed from this one command.
+The reply streams back as `data:` lines. A provider error passes through with its original status and body, so a wrong key or model name is diagnosed from this one command. Status codes minted by the proxy itself: 401 (missing or invalid caller token), 405 (anything but POST), 502 (upstream unreachable) and 504 (upstream timed out before answering). Everything else comes from the provider.
 
 ## Wire the editor to it
 
@@ -56,7 +56,7 @@ Deploy the proxy on the same origin as your app when you can; that needs no CORS
 
 ## Replace the token check
 
-`authorizeRequest` in `src/create-proxy.mjs` is the one spot to swap. It already runs inside an async handler, so an async replacement is a drop-in: make the function async and change the call site to `if (!(await authorizeRequest(token)))`.
+`authorizeRequest` in `src/create-proxy.mjs` is the one spot to swap. The call site awaits it, so an async replacement is a drop-in: just make the function async.
 
 The most portable check asks your app whether the token belongs to a live session. It works unchanged with any auth setup (your own session table, Auth0, Clerk, Supabase), because all of them can expose a "who am I" endpoint:
 

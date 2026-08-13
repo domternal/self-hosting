@@ -25,6 +25,8 @@ function isVersionSibling(documentName) {
 /**
  * @param {object} options
  * @param {number} options.port
+ * @param {string} [options.host] Interface to bind; Hocuspocus binds all
+ *   interfaces when this is omitted.
  * @param {Set<string>} options.tokens Accepted authentication tokens.
  * @param {string} options.database SQLite file path, or ':memory:' for tests.
  * @param {Set<string>} [options.readOnlyTokens] Tokens accepted for VIEWER
@@ -40,6 +42,7 @@ function isVersionSibling(documentName) {
  */
 export function createCollabServer({
   port,
+  host,
   tokens,
   database,
   readOnlyTokens = new Set(),
@@ -50,6 +53,7 @@ export function createCollabServer({
   const notify = webhook ? createWebhookNotifier({ ...webhook, quiet }) : null;
   return new Server({
     port,
+    address: host,
     quiet,
 
     // Runs once per connecting client, before any document data flows.

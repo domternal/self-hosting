@@ -79,7 +79,20 @@ if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
   );
 }
 
-const server = createAiProxy({ upstreamUrl, provider, apiKey, tokens, allowedOrigins });
+// Total upstream cutoff per request. The default is generous for hosted
+// providers; slow local models can need more than the 120 s default.
+const timeoutRaw = Number(process.env.REQUEST_TIMEOUT_MS ?? '');
+const requestTimeoutMs =
+  Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 120_000;
+
+const server = createAiProxy({
+  upstreamUrl,
+  provider,
+  apiKey,
+  tokens,
+  allowedOrigins,
+  requestTimeoutMs,
+});
 server.listen(port, host, () => {
   console.log(`AI proxy listening on http://${host}:${String(port)} -> ${upstreamUrl}`);
 });

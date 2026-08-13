@@ -35,10 +35,16 @@ const production = process.env.NODE_ENV === 'production';
 const placeholdersInUse = [...tokens, ...readOnlyTokens].filter((token) =>
   PLACEHOLDER_TOKENS.has(token)
 );
+// The webhook secret follows the same policy when webhooks are enabled: a
+// signature key copied from the example file is forgeable by anyone who
+// read that file, which defeats the signature entirely.
+if (process.env.WEBHOOK_URL && PLACEHOLDER_TOKENS.has(process.env.WEBHOOK_SECRET ?? '')) {
+  placeholdersInUse.push('WEBHOOK_SECRET');
+}
 if (placeholdersInUse.length > 0) {
   if (production) {
     console.error(
-      `Refusing to start with placeholder tokens in production (${placeholdersInUse.join(', ')}). Set real secrets in COLLAB_TOKENS and COLLAB_READONLY_TOKENS.`
+      `Refusing to start with placeholder tokens in production (${placeholdersInUse.join(', ')}). Set real secrets in COLLAB_TOKENS, COLLAB_READONLY_TOKENS and WEBHOOK_SECRET.`
     );
     process.exit(1);
   }
@@ -58,7 +64,17 @@ if (webhook && !webhook.secret) {
   console.warn('WEBHOOK_URL is set without WEBHOOK_SECRET: deliveries go out UNSIGNED.');
 }
 
-const server = createCollabServer({ port, tokens, database, readOnlyTokens, webhook });
+// Hocuspocus binds ALL interfaces when no address is given, so the host is
+// always passed, same posture as the REST API below: loopback by default,
+// wider only when HOST says so deliberately (Docker sets 0.0.0.0).
+const host = process.env.HOST ?? '127.0.0.1';
+if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+  console.warn(
+    `[collab] Binding ${host}: make sure the server is reachable only from networks you trust.`
+  );
+}
+
+const server = createCollabServer({ port, host, tokens, database, readOnlyTokens, webhook });
 server.listen();
 
 // Optional REST API on its own port, sharing the same Hocuspocus instance

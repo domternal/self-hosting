@@ -4,10 +4,10 @@ Reference backends for [Domternal Pro](https://domternal.dev/pro/): the parts th
 
 | Directory | What it is | You need it for |
 | --- | --- | --- |
-| [`collab-server/`](./collab-server) | A production-shaped [Hocuspocus](https://hocuspocus.dev) v4 server: token auth, server-enforced read-only viewers, SQLite persistence, comment-thread garbage collection, signed webhooks, and a REST API | Real-time collaboration, comments, version history |
+| [`collab-server/`](./collab-server) | A production-shaped [Hocuspocus](https://hocuspocus.dev) v4 server: token auth, server-enforced read-only viewers, SQLite persistence, comment-thread garbage collection, signed webhooks, and a REST API | Real-time collaboration, version history, shared comments |
 | [`ai-proxy/`](./ai-proxy) | A zero-dependency streaming proxy that keeps your AI provider key server-side | The AI assistant |
 
-Everything else in Domternal Pro (columns, export, the editor itself) is client-only and needs no backend at all.
+Everything else in Domternal Pro (columns, export, the editor itself) is client-only and needs no backend at all. Comments sit in between: they work locally with no server, and the collaboration server is what makes threads shared between users and durable.
 
 Each directory is self-contained and carries its own README with the full walkthrough, so copying one directory into your project takes its documentation along. This page orients you and gets both services running.
 

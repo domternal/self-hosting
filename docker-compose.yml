@@ -14,6 +14,8 @@ services:
     environment:
       COLLAB_TOKENS: ${COLLAB_TOKENS:?set COLLAB_TOKENS to a comma-separated list of secrets}
       COLLAB_READONLY_TOKENS: ${COLLAB_READONLY_TOKENS:-}
+      # Container-internal wide bind; published on the host ports above.
+      HOST: 0.0.0.0
       SQLITE_PATH: /data/collab.sqlite
       REST_PORT: '1235'
       REST_HOST: 0.0.0.0

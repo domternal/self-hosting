@@ -38,12 +38,18 @@ function providerHeaders(provider, apiKey) {
  * "Authorization: Bearer <token>" (the editor's `headers` option takes an
  * async function, so a short-lived session token works too). Replace the
  * body with your real check (verify a JWT, hit your session store); the
- * incoming string is whatever your app put in that header.
+ * incoming string is whatever your app put in that header. The call site
+ * awaits, so an async replacement is a drop-in.
+ *
+ * An empty token list accepts every caller. The entrypoint refuses that
+ * configuration in production unless AI_ALLOW_UNAUTHENTICATED=1 states
+ * that a gateway in front of this process authenticates every request.
  *
  * @param {string} token
  * @param {Set<string>} tokens
  */
 function authorizeRequest(token, tokens) {
+  if (tokens.size === 0) return true;
   return tokens.has(token);
 }
 
@@ -73,8 +79,14 @@ export function createAiProxy({
   function corsHeaders(origin) {
     if (origin === undefined || !allowedOrigins.has(origin)) return {};
     // Reflect only origins from the allow list, never '*': the responses
-    // are per-user and the request carries credentials.
-    return { 'access-control-allow-origin': origin, vary: 'origin' };
+    // are per-user and the request carries credentials. retry-after is not
+    // CORS-safelisted, so it must be exposed for the editor's backoff to
+    // read it cross-origin.
+    return {
+      'access-control-allow-origin': origin,
+      'access-control-expose-headers': 'retry-after',
+      vary: 'origin',
+    };
   }
 
   /** @param {import('node:http').ServerResponse} res */
@@ -135,7 +147,7 @@ export function createAiProxy({
       }
 
       const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-      if (!authorizeRequest(token, tokens)) {
+      if (!(await authorizeRequest(token, tokens))) {
         json(res, 401, cors, { error: 'Missing or invalid bearer token' });
         return;
       }
@@ -174,10 +186,14 @@ export function createAiProxy({
 
       // Status and content type pass through untouched, so provider errors
       // reach the editor transport, which already maps them for the UI.
+      // retry-after passes too: the editor's backoff honors it on 429/529,
+      // and stripping it here would silently degrade that to blind retries.
+      const retryAfter = upstream.headers.get('retry-after');
       res.writeHead(upstream.status, {
         ...cors,
         'content-type': upstream.headers.get('content-type') ?? 'application/json',
         'cache-control': 'no-store',
+        ...(retryAfter === null ? {} : { 'retry-after': retryAfter }),
       });
 
       if (upstream.body === null) {
