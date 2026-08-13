@@ -81,9 +81,17 @@ if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
 
 // Total upstream cutoff per request. The default is generous for hosted
 // providers; slow local models can need more than the 120 s default.
+const timeoutSet = (process.env.REQUEST_TIMEOUT_MS ?? '') !== '';
 const timeoutRaw = Number(process.env.REQUEST_TIMEOUT_MS ?? '');
-const requestTimeoutMs =
-  Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 120_000;
+const timeoutValid = Number.isFinite(timeoutRaw) && timeoutRaw > 0;
+if (timeoutSet && !timeoutValid) {
+  // Every other misconfiguration in this file is loud; a silently ignored
+  // timeout would look like it applied until a long generation got cut.
+  console.warn(
+    `[ai-proxy] REQUEST_TIMEOUT_MS="${process.env.REQUEST_TIMEOUT_MS}" is not a positive number: using the 120000 ms default.`
+  );
+}
+const requestTimeoutMs = timeoutValid ? timeoutRaw : 120_000;
 
 const server = createAiProxy({
   upstreamUrl,

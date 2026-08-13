@@ -38,7 +38,7 @@ The AI proxy, with the full walkthrough in [`ai-proxy/README.md`](./ai-proxy/REA
 
 ```bash
 cd ai-proxy
-cp .env.example .env   # then set UPSTREAM_URL, PROVIDER_API_KEY and AI_TOKENS
+cp .env.example .env   # then set UPSTREAM_URL, PROVIDER, PROVIDER_API_KEY and AI_TOKENS
 node --env-file=.env index.mjs
 ```
 
@@ -55,7 +55,7 @@ Requires Node >= 22 (or any OCI runtime for the compose path).
 
 Each service isolates what you must replace in clearly marked spots:
 
-- **`collab-server`**: the token check in `src/create-server.mjs` (swap the static list for your JWT or session lookup, and authorize the document name), and `authorizeDocument` in `src/rest.mjs` for multi-tenant deployments. Persistence swaps the SQLite extension for your own database.
+- **`collab-server`**: the token check in `src/create-server.mjs` (swap the static list for your JWT or session lookup, and authorize the document name), and `authorizeDocument` in `src/rest.mjs` for multi-tenant deployments. Persistence is not on this list: SQLite is production-fine for a single process, and swapping in `@hocuspocus/extension-database` is what you do when you outgrow that.
 - **`ai-proxy`**: the caller check in `src/create-proxy.mjs` (swap the static token list for your session check).
 
 Replace the token checks first. A static token list reaches the browser, so any user can read one out and use it outside your app, and withdrawing it cuts off everyone at once. Both services refuse to start with placeholder tokens when `NODE_ENV=production`, so a forgotten `change-me` fails loudly instead of shipping.

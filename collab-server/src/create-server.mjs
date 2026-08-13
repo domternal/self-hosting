@@ -37,7 +37,7 @@ function isVersionSibling(documentName) {
  *   signed lifecycle events (document.changed, client.connected,
  *   client.disconnected) to your endpoint; null disables it.
  * @param {boolean} [options.quiet] Suppress the Hocuspocus start banner.
- * @param {(fragment: Y.XmlFragment, documentName: string) => void | null} [options.seed]
+ * @param {((fragment: Y.XmlFragment, documentName: string) => void) | null} [options.seed]
  *   Fills brand-new documents; pass null to disable seeding.
  */
 export function createCollabServer({

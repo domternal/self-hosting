@@ -3,6 +3,11 @@ node_modules/
 # Local secrets and local documents never belong in a template's history.
 .env
 *.sqlite
+# SQLite side files carry document data too: a kill mid-transaction leaves a
+# -journal behind, and WAL mode adds -wal and -shm.
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 
 # Consumers of a template generate their own lockfiles.
 package-lock.json

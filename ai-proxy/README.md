@@ -1,14 +1,14 @@
 # Reference AI proxy
 
-A zero-dependency streaming proxy for the Domternal Pro [AI assistant](https://domternal.dev/v1/pro/ai/). The editor calls this endpoint; this endpoint holds the provider key and forwards the stream. That is the whole job, and it is the recommended production setup: an API key shipped to arbitrary users' browsers is compromised by definition, and several providers reject browser calls outright.
+A zero-dependency streaming proxy for the Domternal Pro [AI assistant](https://domternal.dev/v1/pro/ai/). The editor calls this endpoint, and this endpoint holds the provider key and forwards the stream. That is the whole job, and it is the recommended production setup: an API key shipped to arbitrary users' browsers is compromised by definition, and several providers reject browser calls outright.
 
 What it does:
 
-- **Caller authentication**: your app sends `Authorization: Bearer <token>` (the editor's `headers` option takes an async function, so short-lived session tokens work). The example checks the static `AI_TOKENS` list; replace the check in `src/create-proxy.mjs` with your real session lookup.
+- **Caller authentication**: your app sends `Authorization: Bearer <token>` (the editor's `headers` option takes an async function, so short-lived session tokens work). The example checks the static `AI_TOKENS` list. Replace the check in `src/create-proxy.mjs` with your real session lookup.
 - **Key isolation**: the upstream request is built from scratch. The caller's headers are never forwarded, so session tokens and cookies cannot leak to the provider, and the provider key never reaches the browser.
 - **Streaming passthrough**: request bodies pass through untouched in whichever wire dialect the editor speaks (`openai-chat` or `anthropic-messages`), and the SSE reply streams back chunk by chunk with backpressure. Provider errors pass through with their status, so the editor's transport maps them for the UI.
 - **Limits**: a 1 MB request-body cap, an upstream timeout (120 s default, `REQUEST_TIMEOUT_MS` overrides it: slow local models can need more), and an abort when the reader closes the tab, so nobody keeps provider tokens burning for a closed window.
-- **No content logging**: nothing here logs request or response bodies, because prompts carry your users' document text. Keep it that way in your edits; log status codes and durations if you need observability.
+- **No content logging**: nothing here logs request or response bodies, because prompts carry your users' document text. Keep it that way in your edits, and log status codes and durations if you need observability.
 - **Production guards**: with `NODE_ENV=production` the proxy refuses to start with placeholder tokens, and refuses to start with no tokens at all unless `AI_ALLOW_UNAUTHENTICATED=1` says a gateway in front of it authenticates every request. An empty `AI_TOKENS` accepts every caller, which is exactly the state that flag opts into.
 
 What it deliberately does not do: rate limiting and usage quotas belong in your gateway or in the session check you plug in, where you know who the user is.
@@ -20,13 +20,13 @@ You may not need to deploy this as a service. The editor asks for one thing: a U
 ## Run
 
 ```bash
-cp .env.example .env   # then set UPSTREAM_URL, PROVIDER_API_KEY, AI_TOKENS
+cp .env.example .env   # then set UPSTREAM_URL, PROVIDER, PROVIDER_API_KEY, AI_TOKENS
 node --env-file=.env index.mjs
 ```
 
-Requires Node >= 22. There is nothing to install. The proxy binds to `127.0.0.1` by default; set `HOST` to expose it deliberately (the Docker setup does).
+Requires Node >= 22. There is nothing to install. The proxy binds to `127.0.0.1` by default, and `HOST` exposes it deliberately (the Docker setup does).
 
-Check it works before wiring the editor (openai-chat dialect shown; send one of your `AI_TOKENS` values):
+Check it works before wiring the editor. The openai-chat dialect is shown, and the bearer value is one of your `AI_TOKENS`:
 
 ```bash
 curl -sN -X POST http://127.0.0.1:1250/ \
@@ -35,7 +35,7 @@ curl -sN -X POST http://127.0.0.1:1250/ \
   -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Say hi"}]}'
 ```
 
-The reply streams back as `data:` lines. A provider error passes through with its original status and body, so a wrong key or model name is diagnosed from this one command. Status codes minted by the proxy itself: 401 (missing or invalid caller token), 405 (anything but POST), 502 (upstream unreachable) and 504 (upstream timed out before answering). Everything else comes from the provider.
+The reply streams back as `data:` lines. A provider error passes through with its original status and body, so a wrong key or model name is diagnosed from this one command. Status codes minted by the proxy itself: 401 (missing or invalid caller token), 405 (anything but POST), 502 (upstream unreachable), 504 (upstream timed out before answering) and 500 (anything unexpected). An oversized body tears the socket down rather than answering, so that one surfaces as a connection reset. Every other status you see came from the provider.
 
 ## Wire the editor to it
 
@@ -52,7 +52,7 @@ Ai.configure({
 
 No `apiKey` on the client: the proxy adds provider auth server-side (`PROVIDER=openai` sends `Authorization: Bearer`, `PROVIDER=anthropic` sends `x-api-key` plus `anthropic-version`, `PROVIDER=none` sends nothing, for local models).
 
-Deploy the proxy on the same origin as your app when you can; that needs no CORS at all. Cross-origin setups list the exact app origins in `ALLOWED_ORIGINS`, which are reflected per request, never `*`.
+Deploy the proxy on the same origin as your app when you can, which needs no CORS at all. Cross-origin setups list the exact app origins in `ALLOWED_ORIGINS`, which are reflected per request, never `*`.
 
 ## Replace the token check
 
@@ -69,7 +69,7 @@ async function authorizeRequest(token) {
 }
 ```
 
-If your app issues JWTs, verify them locally instead and skip the per-request network hop. The import adds a dependency to your copy, which is fine: zero dependencies describes the reference as shipped, not a rule for your fork.
+If your app issues JWTs, verify them locally instead and skip the per-request network hop. The import adds a dependency to your copy, which is fine: zero dependencies describes the reference as shipped, not a rule for your fork. `src/create-proxy.mjs` deliberately reads no environment of its own, so take the secret in as an option from `index.mjs` the way every other setting arrives, and keep `process.env` out of the module.
 
 ```js
 import { jwtVerify } from 'jose';
