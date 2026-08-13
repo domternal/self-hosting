@@ -204,7 +204,7 @@ export function createAiProxy({
           body,
           signal: controller.signal,
         });
-      } catch (error) {
+      } catch {
         clearTimeout(timeout);
         const timedOut = controller.signal.aborted && !res.destroyed;
         json(res, timedOut ? 504 : 502, cors, {
