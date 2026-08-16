@@ -5,10 +5,10 @@
   "type": "module",
   "description": "Reference Hocuspocus server for Domternal Pro collaboration",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node --env-file-if-exists=.env index.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   },
   "dependencies": {
     "@domternal-pro/extension-comments": "^1.0.0",

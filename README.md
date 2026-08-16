@@ -42,14 +42,16 @@ cp .env.example .env   # then set UPSTREAM_URL, PROVIDER, PROVIDER_API_KEY and A
 node --env-file=.env index.mjs
 ```
 
-Or run both with Docker:
+Or run both with Docker. Compose reads its variables from a `.env` next to
+`docker-compose.yml` (not from the per-service `.env` files), so the root
+`.env.example` lists exactly what it needs:
 
 ```bash
-COLLAB_TOKENS=<secret> UPSTREAM_URL=https://api.openai.com/v1/chat/completions \
-PROVIDER_API_KEY=<key> AI_TOKENS=<secret> docker compose up --build
+cp .env.example .env   # then set COLLAB_TOKENS, UPSTREAM_URL, PROVIDER_API_KEY and AI_TOKENS
+docker compose up --build
 ```
 
-Requires Node >= 22 (or any OCI runtime for the compose path).
+Requires Node >= 22.9 (or any OCI runtime for the compose path).
 
 ## Before production
 
@@ -62,4 +64,4 @@ Replace the token checks first. A static token list reaches the browser, so any 
 
 ## Support and license
 
-This repository is MIT licensed and provided as is: it is a starting point you own and adapt, not a managed product, and it is not covered by Domternal Pro support plans, which cover the editor packages. The `@domternal-pro` packages it installs are not MIT: they remain under the [Domternal Pro commercial license](https://domternal.dev/license/), and running them in production needs a license key. The full guide lives in the [self-hosting documentation](https://domternal.dev/v1/pro/self-hosting/), and problems and suggestions are welcome on the [issue tracker](https://github.com/domternal/domternal/issues).
+This repository is MIT licensed and provided as is: it is a starting point you own and adapt, not a managed product, and it is not covered by Domternal Pro support plans, which cover the editor packages. The `@domternal-pro` packages it installs are not MIT: they remain under the [Domternal Pro commercial license](https://domternal.dev/license/), and running them in production needs a license key. The full guide lives in the [self-hosting documentation](https://domternal.dev/v1/pro/self-hosting/), and problems and suggestions are welcome on the [issue tracker](https://github.com/domternal/domternal/issues). Security problems are the one exception: report them privately to [security@domternal.dev](mailto:security@domternal.dev) as [SECURITY.md](./SECURITY.md) describes, never on the public tracker.

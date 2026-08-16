@@ -71,6 +71,11 @@ function authorizeRequest(token, tokens) {
  *   CORS headers are emitted at all, which is the safest default.
  * @param {number} [options.requestTimeoutMs] Upstream cutoff. Default 120s,
  *   generous because reasoning models stream slowly at the start.
+ * @param {object} [options.dispatcher] Custom undici dispatcher for the
+ *   upstream fetch. Node's own fetch cuts a request whose headers or next
+ *   body chunk take longer than 300 s (undici's defaults) no matter what
+ *   requestTimeoutMs says; a fork that truly needs longer silent gaps
+ *   passes a dispatcher whose headersTimeout/bodyTimeout allow them.
  */
 export function createAiProxy({
   upstreamUrl,
@@ -79,6 +84,7 @@ export function createAiProxy({
   tokens,
   allowedOrigins = new Set(),
   requestTimeoutMs = 120_000,
+  dispatcher,
 }) {
   /** @param {string | undefined} origin */
   function corsHeaders(origin) {
@@ -171,13 +177,15 @@ export function createAiProxy({
         return;
       }
       if (req.method !== 'POST') {
-        json(res, 405, cors, { error: 'POST only' });
+        // RFC 9110 requires Allow alongside a 405.
+        json(res, 405, { ...cors, allow: 'POST, OPTIONS' }, { error: 'POST only' });
         return;
       }
 
       const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
       if (!(await authorizeRequest(token, tokens))) {
-        json(res, 401, cors, { error: 'Missing or invalid bearer token' });
+        // RFC 6750 requires WWW-Authenticate alongside a bearer 401.
+        json(res, 401, { ...cors, 'www-authenticate': 'Bearer' }, { error: 'Missing or invalid bearer token' });
         return;
       }
 
@@ -203,12 +211,25 @@ export function createAiProxy({
           },
           body,
           signal: controller.signal,
+          // A followed redirect would resend the body, with the provider
+          // auth attached, to whatever host the upstream names: x-api-key
+          // is a custom header the fetch spec does not strip cross-origin.
+          // Refusing also turns a misconfigured UPSTREAM_URL into a loud,
+          // diagnosable failure instead of confusing provider errors.
+          redirect: 'error',
+          ...(dispatcher === undefined ? {} : { dispatcher }),
         });
-      } catch {
+      } catch (error) {
         clearTimeout(timeout);
         const timedOut = controller.signal.aborted && !res.destroyed;
+        const redirected =
+          !timedOut && /redirect/i.test(`${error?.message ?? ''} ${error?.cause?.message ?? ''}`);
         json(res, timedOut ? 504 : 502, cors, {
-          error: timedOut ? 'Upstream timed out' : 'Upstream unreachable',
+          error: timedOut
+            ? 'Upstream timed out'
+            : redirected
+              ? 'Upstream redirected; set UPSTREAM_URL to the final endpoint'
+              : 'Upstream unreachable',
         });
         return;
       }
@@ -242,13 +263,26 @@ export function createAiProxy({
         });
       } finally {
         clearTimeout(timeout);
-        if (!res.writableEnded) res.end();
+        // A relay that failed mid-body must NOT be finished politely:
+        // end() writes the chunked terminator, which presents the
+        // truncated reply as complete. Dropping the socket lets the client
+        // see the cut and surface or retry it. Clean completions never get
+        // here with an open stream (pipe already ended the response).
+        if (!res.writableEnded) res.destroy();
       }
     })().catch((error) => {
-      const status = typeof error?.statusCode === 'number' ? error.statusCode : 500;
+      const tagged = typeof error?.statusCode === 'number';
+      const status = tagged ? error.statusCode : 500;
       if (!res.headersSent && !res.destroyed) {
         res.writeHead(status, { 'content-type': 'application/json', ...cors });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        // Only errors minted in this file carry a statusCode; anything else
+        // (say a replaced authorizeRequest that throws) must not leak its
+        // internals to an unauthenticated caller.
+        res.end(
+          JSON.stringify({
+            error: tagged && error instanceof Error ? error.message : 'Internal error',
+          })
+        );
       }
     });
   });

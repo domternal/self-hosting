@@ -7,7 +7,7 @@ What it does:
 - **Caller authentication**: your app sends `Authorization: Bearer <token>` (the editor's `headers` option takes an async function, so short-lived session tokens work). The example checks the static `AI_TOKENS` list. Replace the check in `src/create-proxy.mjs` with your real session lookup.
 - **Key isolation**: the upstream request is built from scratch. The caller's headers are never forwarded, so session tokens and cookies cannot leak to the provider, and the provider key never reaches the browser.
 - **Streaming passthrough**: request bodies pass through untouched in whichever wire dialect the editor speaks (`openai-chat` or `anthropic-messages`), and the SSE reply streams back chunk by chunk with backpressure. Provider errors pass through with their status, so the editor's transport maps them for the UI.
-- **Limits**: a 1 MB request-body cap, an upstream timeout (120 s default, `REQUEST_TIMEOUT_MS` overrides it: slow local models can need more), and an abort when the reader closes the tab, so nobody keeps provider tokens burning for a closed window.
+- **Limits**: a 1 MB request-body cap with a 20 s stall cutoff on the upload (so a caller who announces a body and goes silent cannot pin buffers), an upstream timeout (120 s default, `REQUEST_TIMEOUT_MS` overrides it: slow local models can need more), and an abort when the reader closes the tab, so nobody keeps provider tokens burning for a closed window.
 - **No content logging**: nothing here logs request or response bodies, because prompts carry your users' document text. Keep it that way in your edits, and log status codes and durations if you need observability.
 - **Production guards**: with `NODE_ENV=production` the proxy refuses to start with placeholder tokens, and refuses to start with no tokens at all unless `AI_ALLOW_UNAUTHENTICATED=1` says a gateway in front of it authenticates every request. An empty `AI_TOKENS` accepts every caller, which is exactly the state that flag opts into.
 
@@ -24,7 +24,7 @@ cp .env.example .env   # then set UPSTREAM_URL, PROVIDER, PROVIDER_API_KEY, AI_T
 node --env-file=.env index.mjs
 ```
 
-Requires Node >= 22. There is nothing to install. The proxy binds to `127.0.0.1` by default, and `HOST` exposes it deliberately (the Docker setup does).
+Requires Node >= 22.9. There is nothing to install. The proxy binds to `127.0.0.1` by default, and `HOST` exposes it deliberately (the Docker setup does).
 
 Check it works before wiring the editor. The openai-chat dialect is shown, and the bearer value is one of your `AI_TOKENS`:
 
@@ -35,7 +35,7 @@ curl -sN -X POST http://127.0.0.1:1250/ \
   -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Say hi"}]}'
 ```
 
-The reply streams back as `data:` lines. A provider error passes through with its original status and body, so a wrong key or model name is diagnosed from this one command. Status codes minted by the proxy itself: 401 (missing or invalid caller token), 405 (anything but POST), 502 (upstream unreachable), 504 (upstream timed out before answering) and 500 (anything unexpected). An oversized body tears the socket down rather than answering, so that one surfaces as a connection reset. Every other status you see came from the provider.
+The reply streams back as `data:` lines. A provider error passes through with its original status and body, so a wrong key or model name is diagnosed from this one command. Status codes minted by the proxy itself: 401 (missing or invalid caller token), 405 (anything but POST), 502 (upstream unreachable or redirecting: the proxy refuses to follow redirects, so point `UPSTREAM_URL` at the final endpoint), 504 (upstream timed out before answering) and 500 (anything unexpected). An oversized or stalled request body tears the socket down rather than answering, so those two surface as a connection reset. A relay that fails after the stream started (the upstream dies mid-body, or the timeout fires mid-generation) is cut off rather than terminated politely, so a truncated reply never masquerades as a complete one. Every other status you see came from the provider.
 
 ## Wire the editor to it
 
@@ -100,5 +100,7 @@ Once a real check is in place, `AI_TOKENS` has no job left. This function is als
 Ollama, LM Studio and vLLM speak the OpenAI dialect and need no key:
 
 ```bash
-UPSTREAM_URL=http://127.0.0.1:11434/v1/chat/completions PROVIDER=none AI_TOKENS=dev node index.mjs
+UPSTREAM_URL=http://127.0.0.1:11434/v1/chat/completions PROVIDER=none AI_TOKENS=dev-token node index.mjs
 ```
+
+Slow local models are the case where `REQUEST_TIMEOUT_MS` earns its keep, with one runtime limit to know about: Node's own `fetch` cuts a request whose response headers or next chunk take longer than 300 s (undici's defaults), no matter how high the setting goes, and the proxy warns at startup when the configured value crosses that line. The value still bounds the total once tokens flow; only fully silent gaps hit the runtime cap first. A fork that truly needs longer silence can pass a custom undici dispatcher via `createAiProxy({ dispatcher })`, with `headersTimeout` and `bodyTimeout` raised to match.

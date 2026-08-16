@@ -1,0 +1,14 @@
+# The template is copied byte for byte into customer projects and mirrored
+# against the pro repository, so line endings are pinned rather than left to
+# each cloner's core.autocrlf.
+* text=auto
+*.mjs text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.example text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+LICENSE text eol=lf

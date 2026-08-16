@@ -18,8 +18,9 @@ const COLLAB_FIELD = 'default';
 const COMMENTS_MAP = 'comments';
 
 // Server-owned bookkeeping that rides along in the document. Only the seeded
-// flag lives here today; the editor never reads this map.
-const META_MAP = 'serverMeta';
+// flag lives here today; the editor never reads this map. Exported because
+// the REST API marks documents it provisions as owned (see rest.mjs).
+export const META_MAP = 'serverMeta';
 
 /** @param {string} documentName */
 function isVersionSibling(documentName) {
@@ -56,16 +57,57 @@ export function createCollabServer({
 }) {
   const notify = webhook ? createWebhookNotifier({ ...webhook, quiet }) : null;
 
+  // Yjs updates applied to each live document since its last real store.
+  // Closing a direct connection forces an IMMEDIATE store cycle that
+  // replaces whatever store the editors' own edits had scheduled, and that
+  // cycle carries the CLOSING connection's context. Skipping on context
+  // alone would therefore let a REST read swallow pending editor work: the
+  // scheduled store is cancelled, nothing persists, and no webhook fires.
+  // This ledger records whether real changes are waiting, so a read-context
+  // store still persists and announces them.
+  const pendingUpdates = new WeakMap();
+  const observed = new WeakSet();
+  /** @param {import('yjs').Doc} document */
+  function observeUpdates(document) {
+    if (observed.has(document)) return;
+    observed.add(document);
+    // Attached from onLoadDocument, which runs AFTER the persistence
+    // extension restored stored state (extension hooks run before these
+    // configuration-level hooks), so loading itself never counts.
+    document.on('update', () => {
+      pendingUpdates.set(document, (pendingUpdates.get(document) ?? 0) + 1);
+    });
+  }
+
   // Closing a direct connection always runs the store hooks, so a REST READ
   // of a name nobody has opened would persist an empty document, letting a
   // read-only token create rows at will. Reads mark their context and this
-  // wrapper skips the write for them; REST writes persist normally.
+  // wrapper skips the write for them, unless the ledger above says editor
+  // changes are riding on the same store cycle; REST writes persist
+  // normally.
   const persistence = new SQLite({ database });
   const storeDocument = persistence.onStoreDocument?.bind(persistence);
-  if (storeDocument) {
-    persistence.onStoreDocument = async (payload) =>
-      payload.lastContext?.restRead === true ? undefined : storeDocument(payload);
+  if (!storeDocument) {
+    // Without the wrap, REST reads would quietly resume persisting empty
+    // rows. A dependency upgrade must not remove that guarantee silently.
+    throw new Error(
+      '@hocuspocus/extension-sqlite no longer exposes onStoreDocument; update the REST read guard in create-server.mjs.'
+    );
   }
+  persistence.onStoreDocument = async (payload) => {
+    const pending = pendingUpdates.get(payload.document) ?? 0;
+    if (payload.lastContext?.restRead === true && pending === 0) return undefined;
+    // The payload object is shared with the onStoreDocument hook below
+    // (extensions run first, configuration hooks last), so this stamp is
+    // how the notifier learns a read-context store carried real changes.
+    payload.storedRealChanges = true;
+    await storeDocument(payload);
+    // Subtract only what this store captured: updates that landed while
+    // the write ran stay counted for the next cycle.
+    const remaining = (pendingUpdates.get(payload.document) ?? 0) - pending;
+    if (remaining > 0) pendingUpdates.set(payload.document, remaining);
+    else pendingUpdates.delete(payload.document);
+  };
 
   return new Server({
     port,
@@ -100,6 +142,10 @@ export function createCollabServer({
     // Runs after the SQLite extension restored any stored state, so the
     // seeded flag below reflects what persistence actually holds.
     async onLoadDocument({ document, documentName, context }) {
+      // Track real changes from the first moment anything can write: the
+      // restore is already applied by the time this hook runs, and clients
+      // only start syncing after the load completes.
+      observeUpdates(document);
       // REST access opens direct connections with { rest: true } context.
       // A GET of a name nobody has opened yet must stay a read: seeding
       // here would let any read-only token materialize and persist welcome
@@ -115,11 +161,16 @@ export function createCollabServer({
       }
       // Brand-new is a stored FLAG, not an empty fragment: a user who clears
       // the page on purpose also loads with a zero-length fragment, and a
-      // length test would re-inject the welcome content they just removed,
-      // then carry it into their exports, prints and version snapshots.
+      // length test alone would re-inject the welcome content they just
+      // removed, then carry it into their exports, prints and version
+      // snapshots. The emptiness test rides along as the second condition
+      // for the opposite failure: a document whose first content arrived
+      // through a path that forgot the flag must not get welcome content
+      // injected on top of its real body.
       const meta = document.getMap(META_MAP);
-      if (seed && meta.get('seeded') !== true) {
-        seed(document.getXmlFragment(COLLAB_FIELD), documentName);
+      const fragment = document.getXmlFragment(COLLAB_FIELD);
+      if (seed && meta.get('seeded') !== true && fragment.length === 0) {
+        seed(fragment, documentName);
         meta.set('seeded', true);
       }
       return document;
@@ -130,7 +181,8 @@ export function createCollabServer({
     // client would let a concurrent reply resurrect it); the server is the
     // one authority that may physically reclaim them, and this hook is where.
     // Without it, deleted threads accumulate in the document forever.
-    async onStoreDocument({ document, documentName, lastContext }) {
+    async onStoreDocument(payload) {
+      const { document, documentName, lastContext } = payload;
       // Collect on every document. The suffix test that used to guard this
       // call classified by NAME alone, so a real document called
       // "handbook-versions" was never swept and kept deleted comment text in
@@ -140,7 +192,7 @@ export function createCollabServer({
       // exception here aborts the rest of the store hook, which strands
       // deleted bodies in persistence, stops webhook deliveries, pins the
       // document in memory and hangs graceful shutdown. The collector guards
-      // its own shapes now, so this is the second line of defence.
+      // its own shapes now, so this is the second line of defense.
       try {
         collectThreadGarbage(document.getMap(COMMENTS_MAP));
       } catch (error) {
@@ -148,8 +200,10 @@ export function createCollabServer({
       }
       // A REST read opens a direct connection and closes it, which runs this
       // hook. Announcing a change nobody made would drive every receiver's
-      // reindex and audit trail off pure reads.
-      if (lastContext?.restRead === true) return;
+      // reindex and audit trail off pure reads. When the read-context store
+      // absorbed real editor changes (the persistence wrap stamps the shared
+      // payload), those changes DID happen and their announcement goes out.
+      if (lastContext?.restRead === true && payload.storedRealChanges !== true) return;
       notify?.('document.changed', { documentName });
     },
 

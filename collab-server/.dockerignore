@@ -1,0 +1,9 @@
+# Keep local runs out of the build context: node_modules is reinstalled in
+# the image, and .env plus the SQLite files hold secrets and document data
+# that must never travel to the builder.
+node_modules
+.env
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

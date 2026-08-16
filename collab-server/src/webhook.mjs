@@ -29,7 +29,9 @@ export function createWebhookNotifier({ url, secret = '', quiet = false }) {
       const digest = createHmac('sha256', secret).update(body).digest('hex');
       headers['x-hocuspocus-signature-256'] = `sha256=${digest}`;
     }
-    fetch(url, { method: 'POST', headers, body }).catch((error) => {
+    // Bounded delivery: without a cutoff a hung receiver keeps a socket and
+    // an in-flight request pinned for undici's 300 second default, per event.
+    fetch(url, { method: 'POST', headers, body, signal: AbortSignal.timeout(10_000) }).catch((error) => {
       if (!quiet) {
         console.warn(`[webhook] delivery failed for "${event}":`, error?.message ?? error);
       }

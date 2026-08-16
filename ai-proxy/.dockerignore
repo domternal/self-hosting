@@ -1,0 +1,4 @@
+# Keep local runs out of the build context: node_modules is reinstalled in
+# the image, and .env holds secrets that must never travel to the builder.
+node_modules
+.env

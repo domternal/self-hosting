@@ -86,6 +86,16 @@ if (placeholdersInUse.length > 0) {
 const webhook = process.env.WEBHOOK_URL
   ? { url: process.env.WEBHOOK_URL, secret: process.env.WEBHOOK_SECRET ?? '' }
   : null;
+if (webhook) {
+  // A typo here would otherwise only surface at the first delivery, as a
+  // warning in a log nobody is watching by then.
+  try {
+    new URL(webhook.url);
+  } catch {
+    console.error(`WEBHOOK_URL="${webhook.url}" is not a valid URL.`);
+    process.exit(1);
+  }
+}
 if (webhook && !webhook.secret) {
   // A forgotten secret must not fail silently: the operator believes these
   // deliveries are signed, and the receiver has no way to tell forgeries
@@ -103,7 +113,26 @@ if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
   );
 }
 
+/**
+ * The listen promises never reject on socket errors, so without these
+ * handlers a taken port or an unresolvable HOST dies with a raw stack
+ * instead of a sentence, the exact failure portOf exists to prevent.
+ * @param {NodeJS.ErrnoException} error
+ */
+function listenErrorText(error) {
+  if (error.code === 'EADDRINUSE') return 'the port is already in use';
+  if (error.code === 'EACCES') return 'ports below 1024 need elevated privileges';
+  if (error.code === 'EADDRNOTAVAIL' || error.code === 'ENOTFOUND') {
+    return 'the host address is not available on this machine';
+  }
+  return error.message;
+}
+
 const server = createCollabServer({ port, host, tokens, database, readOnlyTokens, webhook });
+server.httpServer.on('error', (error) => {
+  console.error(`[collab] Could not listen on ${host}:${String(port)}: ${listenErrorText(error)}`);
+  process.exit(1);
+});
 server.listen();
 
 // Optional REST API on its own port, sharing the same Hocuspocus instance
@@ -126,6 +155,10 @@ if (restPort > 0) {
     );
   }
   const rest = createRestServer({ collabServer: server, tokens, readOnlyTokens });
+  rest.on('error', (error) => {
+    console.error(`[rest] Could not listen on ${restHost}:${String(restPort)}: ${listenErrorText(error)}`);
+    process.exit(1);
+  });
   rest.listen(restPort, restHost, () => {
     console.log(`REST API listening on http://${restHost}:${String(restPort)}`);
   });

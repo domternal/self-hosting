@@ -18,6 +18,7 @@
 import { createServer } from 'node:http';
 import { yDocToProsemirrorJSON } from 'y-prosemirror';
 import * as Y from 'yjs';
+import { META_MAP } from './create-server.mjs';
 
 const COLLAB_FIELD = 'default';
 
@@ -73,6 +74,17 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
    *   GET of an unknown name would create and persist an empty document.
    */
   async function withDocument(name, read, mutates = false) {
+    if (!mutates) {
+      // A document that is open RIGHT NOW is read in place. A direct
+      // connection would do more than read: closing it forces an immediate
+      // store cycle that replaces the debounced store the editors' own
+      // edits scheduled, so polling live documents would churn the
+      // persistence layer for nothing. The documents map only ever holds
+      // fully loaded documents, so an entry here is safe to read
+      // synchronously; loads in flight take the connection path below.
+      const live = collabServer.hocuspocus.documents.get(name);
+      if (live) return read(live);
+    }
     const connection = await collabServer.hocuspocus.openDirectConnection(name, {
       rest: true,
       restRead: !mutates,
@@ -91,12 +103,12 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
   }
 
   /** @param {import('node:http').ServerResponse} res */
-  function json(res, status, body) {
+  function json(res, status, body, extraHeaders = {}) {
     // The 413 path destroys the request socket mid-stream; writing headers
     // onto that dead socket would throw inside the error handler itself.
     if (res.destroyed || res.writableEnded || res.headersSent) return;
     const payload = JSON.stringify(body);
-    res.writeHead(status, { 'content-type': 'application/json' });
+    res.writeHead(status, { 'content-type': 'application/json', ...extraHeaders });
     res.end(payload);
   }
 
@@ -134,17 +146,31 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
       // them full write access here while the editor UI goes read-only.
       const canWrite = tokens.has(token) && !readOnlyTokens.has(token);
       if (!canRead) {
-        json(res, 401, { error: 'Missing or invalid bearer token' });
+        json(res, 401, { error: 'Missing or invalid bearer token' }, { 'www-authenticate': 'Bearer' });
         return;
       }
 
       const url = new URL(req.url ?? '/', 'http://localhost');
-      const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+      // Malformed percent-encoding is the caller's error: the URIError from
+      // decodeURIComponent must answer 400, not fall through as a 500.
+      let segments;
+      try {
+        segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+      } catch {
+        json(res, 400, { error: 'Path is not valid percent-encoding' });
+        return;
+      }
       if (segments[0] !== 'documents' || segments.length < 2) {
         json(res, 404, { error: 'Unknown route' });
         return;
       }
       const name = segments[1];
+      if (name.trim() === '') {
+        // Hocuspocus refuses empty names with a throw; answer the caller
+        // before the library turns that into a 500.
+        json(res, 400, { error: 'Document name must not be empty' });
+        return;
+      }
       const rest = segments.slice(2);
       const mode = req.method === 'POST' ? 'write' : 'read';
       if (!authorizeDocument(token, name, mode)) {
@@ -190,25 +216,36 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
             return;
           }
           const update = Buffer.from(body.update, 'base64');
+          // Decode against a scratch document first: Y.applyUpdate
+          // integrates structs AS it decodes, so a corrupt update applied
+          // straight to the live document could mutate it partially before
+          // throwing. The caller's error must be refused with zero side
+          // effects, and a genuine server fault below must stay a 500
+          // instead of masquerading as a 400.
           try {
-            await withDocument(
-              name,
-              (document) => {
-                // No custom origin: this runs inside connection.transact, whose
-                // already-open transaction (origin { source: 'local' }) absorbs
-                // the apply, so a third argument here would be silently ignored.
-                // Distinguish REST writes by the direct connection's context
-                // ({ rest: true }, see withDocument) in your hooks instead.
-                Y.applyUpdate(document, update);
-              },
-              true
-            );
+            Y.applyUpdate(new Y.Doc(), update);
           } catch {
             // Yjs throws its own internal errors on a corrupt update; those
             // messages describe our dependency, not the caller's mistake.
             json(res, 400, { error: 'Body is not a decodable Yjs update' });
             return;
           }
+          await withDocument(
+            name,
+            (document) => {
+              // No custom origin: this runs inside connection.transact, whose
+              // already-open transaction (origin { source: 'local' }) absorbs
+              // the apply, so a third argument here would be silently ignored.
+              // Distinguish REST writes by the direct connection's context
+              // ({ rest: true }, see withDocument) in your hooks instead.
+              Y.applyUpdate(document, update);
+              // Content that arrives through this path was never seeded and
+              // must never be: mark the document as owned so the websocket
+              // load does not inject welcome content on top of it.
+              document.getMap(META_MAP).set('seeded', true);
+            },
+            true
+          );
           json(res, 200, { name, applied: true });
           return;
         }
@@ -226,6 +263,10 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
             document
               .getArray('versions')
               .toArray()
+              // The sibling document is peer-writable: one client writing a
+              // plain value into the array must not turn the whole listing
+              // into a 500 for every caller.
+              .filter((entry) => entry instanceof Y.Map)
               .map((entry) => ({
                 id: entry.get('id'),
                 name: entry.get('name'),
@@ -249,7 +290,7 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
             const entry = document
               .getArray('versions')
               .toArray()
-              .find((candidate) => candidate.get('id') === versionId);
+              .find((candidate) => candidate instanceof Y.Map && candidate.get('id') === versionId);
             const blob = entry?.get('blob');
             return blob ? Buffer.from(blob).toString('base64') : null;
           });
@@ -265,6 +306,15 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
       json(res, 404, { error: 'Unknown route' });
     })().catch((error) => {
       const status = typeof error?.statusCode === 'number' ? error.statusCode : 500;
+      // Errors minted in this file carry a statusCode and describe the
+      // caller's mistake, so their message passes through. Anything else is
+      // ours: log it for the operator and keep library internals (SQLite,
+      // Hocuspocus, Yjs) out of the response body.
+      if (status >= 500) {
+        console.error(`[rest] ${req.method ?? ''} ${req.url ?? ''} failed:`, error);
+        json(res, status, { error: 'Internal server error' });
+        return;
+      }
       json(res, status, { error: error instanceof Error ? error.message : String(error) });
     });
   });

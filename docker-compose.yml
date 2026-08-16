@@ -1,10 +1,20 @@
 # Both reference backends, built locally from this repository. Compose fails
-# fast until the required secrets are set: put them in a .env file next to
-# this compose file. Both containers run with NODE_ENV=production, so the
-# placeholder-token guards are active and "change-me" values are refused.
+# fast until the required secrets are set: copy .env.example to .env next to
+# this compose file and fill it in. Both containers run with
+# NODE_ENV=production, so the placeholder-token guards are active and
+# "change-me" values are refused.
+#
+# The AI proxy's gateway mode (AI_ALLOW_UNAUTHENTICATED=1 with no tokens) is
+# deliberately not wired here: it exists for setups where an authenticating
+# gateway fronts the proxy, and that gateway belongs in this file too. Drop
+# the :? from AI_TOKENS and forward AI_ALLOW_UNAUTHENTICATED when you add it.
 services:
   collab-server:
     build: ./collab-server
+    # An init process reaps zombies and forwards SIGTERM, so `docker compose
+    # stop` ends the container promptly instead of waiting out the kill grace.
+    init: true
+    restart: unless-stopped
     ports:
       # Websocket for HocuspocusProvider.
       - '1234:1234'
@@ -23,9 +33,17 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
     volumes:
       - collab-data:/data
+    healthcheck:
+      # Hocuspocus answers a plain HTTP GET on the websocket port.
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:1234/').then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   ai-proxy:
     build: ./ai-proxy
+    init: true
+    restart: unless-stopped
     ports:
       - '1250:1250'
     environment:
@@ -34,8 +52,15 @@ services:
       PROVIDER_API_KEY: ${PROVIDER_API_KEY:-}
       AI_TOKENS: ${AI_TOKENS:?set AI_TOKENS to a comma-separated list of secrets}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-}
       # Container-internal wide bind; published on the host port above.
       HOST: 0.0.0.0
+    healthcheck:
+      # GET answers 405 by design; any HTTP answer proves the process alive.
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:1250/').then(()=>process.exit(0),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   collab-data:

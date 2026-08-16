@@ -5,9 +5,9 @@
   "type": "module",
   "description": "Streaming AI proxy for the Domternal Pro assistant: the provider key stays on your server",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node --env-file-if-exists=.env index.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   }
 }
