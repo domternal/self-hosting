@@ -72,17 +72,22 @@ async function authorizeRequest(token) {
 If your app issues JWTs, verify them locally instead and skip the per-request network hop. The import adds a dependency to your copy, which is fine: zero dependencies describes the reference as shipped, not a rule for your fork. `src/create-proxy.mjs` deliberately reads no environment of its own, so take the secret in as an option from `index.mjs` the way every other setting arrives, and keep `process.env` out of the module.
 
 ```js
+// index.mjs reads the environment and hands the secret over, so this
+// module keeps no process.env of its own: replace the built-in
+// authorizeRequest in src/create-proxy.mjs with the function returned by
+// authorizeRequestWith(secret), wired from index.mjs.
 import { jwtVerify } from 'jose';
 
-const secret = new TextEncoder().encode(process.env.SESSION_JWT_SECRET);
-
-async function authorizeRequest(token) {
-  try {
-    await jwtVerify(token, secret); // signature and expiry
-    return true;
-  } catch {
-    return false;
-  }
+function authorizeRequestWith(jwtSecret) {
+  const secret = new TextEncoder().encode(jwtSecret);
+  return async function authorizeRequest(token) {
+    try {
+      await jwtVerify(token, secret); // signature and expiry
+      return true;
+    } catch {
+      return false;
+    }
+  };
 }
 ```
 

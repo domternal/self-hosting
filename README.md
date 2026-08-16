@@ -62,4 +62,4 @@ Replace the token checks first. A static token list reaches the browser, so any 
 
 ## Support and license
 
-This repository is MIT licensed and provided as is: it is a starting point you own and adapt, not a managed product, and it is not covered by Domternal Pro support plans, which cover the editor packages. The full guide lives in the [self-hosting documentation](https://domternal.dev/v1/pro/self-hosting/), and problems and suggestions are welcome on the [issue tracker](https://github.com/domternal/domternal/issues).
+This repository is MIT licensed and provided as is: it is a starting point you own and adapt, not a managed product, and it is not covered by Domternal Pro support plans, which cover the editor packages. The `@domternal-pro` packages it installs are not MIT: they remain under the [Domternal Pro commercial license](https://domternal.dev/license/), and running them in production needs a license key. The full guide lives in the [self-hosting documentation](https://domternal.dev/v1/pro/self-hosting/), and problems and suggestions are welcome on the [issue tracker](https://github.com/domternal/domternal/issues).
