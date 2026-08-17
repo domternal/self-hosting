@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Entrypoint: configuration comes from the environment so the same code runs
 // locally, in Docker, or behind a process manager. See .env.example.
+import { accessSync, constants, existsSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { createCollabServer } from './src/create-server.mjs';
 import { createRestServer } from './src/rest.mjs';
 
@@ -24,6 +26,25 @@ function portOf(raw, fallback, name) {
 
 const port = portOf(process.env.PORT, 1234, 'PORT');
 const database = process.env.SQLITE_PATH ?? 'collab.sqlite';
+
+// An unwritable database must fail startup, not stores. SQLite falls back
+// to read-only on an existing file it cannot write, the process then looks
+// healthy while every store cycle fails in the log, and the edits are gone
+// on the next restart. The classic trigger is a Docker volume created by
+// the older root image: the container now runs as the node user, and the
+// one-time migration in the repository README (chown the volume to node)
+// is the fix this message names.
+if (database !== ':memory:') {
+  const target = existsSync(database) ? database : dirname(database);
+  try {
+    accessSync(target, constants.W_OK);
+  } catch {
+    console.error(
+      `SQLITE_PATH="${database}" is not writable by this process. If this is a Docker volume created by an older root-based image, run the one-time ownership migration from the README (chown the volume to the node user).`
+    );
+    process.exit(1);
+  }
+}
 
 /** @param {string | undefined} raw */
 function tokenSet(raw) {

@@ -86,6 +86,14 @@ export function createAiProxy({
   requestTimeoutMs = 120_000,
   dispatcher,
 }) {
+  if (dispatcher !== undefined && typeof dispatcher?.dispatch !== 'function') {
+    // A node:http Agent reads like a synonym and is the realistic mistake;
+    // passed through it would fail every request with a silent 502 instead
+    // of failing startup with a sentence.
+    throw new TypeError(
+      'createAiProxy: dispatcher must be an undici Dispatcher (an object with a dispatch method).'
+    );
+  }
   /** @param {string | undefined} origin */
   function corsHeaders(origin) {
     if (origin === undefined || !allowedOrigins.has(origin)) return {};
@@ -222,8 +230,19 @@ export function createAiProxy({
       } catch (error) {
         clearTimeout(timeout);
         const timedOut = controller.signal.aborted && !res.destroyed;
-        const redirected =
-          !timedOut && /redirect/i.test(`${error?.message ?? ''} ${error?.cause?.message ?? ''}`);
+        // undici's redirect refusal rejects with TypeError 'fetch failed'
+        // whose cause message is exactly 'unexpected redirect' (probed on
+        // Node 22 and 24). Matched exactly: a substring test would also
+        // catch genuine network errors whose cause embeds a hostname that
+        // happens to contain the word.
+        const redirected = !timedOut && error?.cause?.message === 'unexpected redirect';
+        // One operator-facing line for the silent-502 set (DNS, TLS,
+        // connect refusals, redirect refusals): status and cause only,
+        // never content, per the logging policy above. Aborts are the
+        // caller's own doing and the timeout already answers 504.
+        if (!controller.signal.aborted) {
+          console.error('[ai-proxy] upstream fetch failed:', error?.cause?.message ?? error?.message);
+        }
         json(res, timedOut ? 504 : 502, cors, {
           error: timedOut
             ? 'Upstream timed out'

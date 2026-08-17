@@ -62,7 +62,7 @@ export function createCollabServer({
   // replaces whatever store the editors' own edits had scheduled, and that
   // cycle carries the CLOSING connection's context. Skipping on context
   // alone would therefore let a REST read swallow pending editor work: the
-  // scheduled store is cancelled, nothing persists, and no webhook fires.
+  // scheduled store is canceled, nothing persists, and no webhook fires.
   // This ledger records whether real changes are waiting, so a read-context
   // store still persists and announces them.
   const pendingUpdates = new WeakMap();
@@ -141,7 +141,7 @@ export function createCollabServer({
 
     // Runs after the SQLite extension restored any stored state, so the
     // seeded flag below reflects what persistence actually holds.
-    async onLoadDocument({ document, documentName, context }) {
+    async onLoadDocument({ instance, document, documentName, context }) {
       // Track real changes from the first moment anything can write: the
       // restore is already applied by the time this hook runs, and clients
       // only start syncing after the load completes.
@@ -150,7 +150,10 @@ export function createCollabServer({
       // A GET of a name nobody has opened yet must stay a read: seeding
       // here would let any read-only token materialize and persist welcome
       // content, and would let reads create documents. The websocket path
-      // owns seeding.
+      // owns seeding. (Loads are shared: when a REST read STARTS the load
+      // and a websocket client attaches microseconds later, the rest branch
+      // wins and that first visit goes unseeded. The window is the load
+      // duration, and the flag stays unset, so the next fresh load seeds.)
       if (context?.rest === true) {
         return document;
       }
@@ -172,6 +175,21 @@ export function createCollabServer({
       if (seed && meta.get('seeded') !== true && fragment.length === 0) {
         seed(fragment, documentName);
         meta.set('seeded', true);
+        // Hocuspocus attaches its store-scheduling update listener AFTER
+        // this hook, so the seed alone would never reach persistence: a
+        // look-only session would close with nothing debounced, unload
+        // without a row, and the next load would seed AGAIN with fresh
+        // CRDT structs, doubling the welcome content on every reconnect.
+        // Scheduling the cycle here persists the seed and the flag in
+        // every exit order (a close during the debounce flushes it).
+        instance.storeDocumentHooks(document, {
+          instance,
+          document,
+          documentName,
+          clientsCount: 0,
+          lastContext: context,
+          lastTransactionOrigin: { source: 'local', context },
+        });
       }
       return document;
     },
@@ -193,6 +211,13 @@ export function createCollabServer({
       // deleted bodies in persistence, stops webhook deliveries, pins the
       // document in memory and hangs graceful shutdown. The collector guards
       // its own shapes now, so this is the second line of defense.
+      //
+      // The sweep also runs on read-triggered cycles on purpose: when a
+      // READ is what finally crosses a doomed thread's reclaim margin, the
+      // reclamation is a real document change, so it persists through its
+      // own follow-up store and announces one document.changed about two
+      // seconds later. Skipping the sweep for reads would instead leave
+      // tombstones in place forever on documents that are only ever read.
       try {
         collectThreadGarbage(document.getMap(COMMENTS_MAP));
       } catch (error) {

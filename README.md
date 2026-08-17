@@ -53,6 +53,16 @@ docker compose up --build
 
 Requires Node >= 22.9 (or any OCI runtime for the compose path).
 
+### Upgrading a Docker deployment that predates the non-root images
+
+The containers now run as the unprivileged `node` user. A `collab-data` volume created by an older root-based image keeps its root ownership, and the collaboration server then refuses to start with a message naming this section (better a loud refusal than the silent alternative: a read-only database that looks healthy while every save fails and edits vanish on the next restart). Fix it once:
+
+```bash
+docker compose run --rm --user 0 --no-deps collab-server chown -R node:node /data
+```
+
+Fresh deployments never need this: a volume created by the current image is owned correctly from the start.
+
 ## Before production
 
 Each service isolates what you must replace in clearly marked spots:

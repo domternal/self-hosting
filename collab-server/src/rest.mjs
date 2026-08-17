@@ -155,10 +155,17 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
       // decodeURIComponent must answer 400, not fall through as a 500.
       let segments;
       try {
-        segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+        segments = url.pathname.split('/').slice(1).map(decodeURIComponent);
       } catch {
         json(res, 400, { error: 'Path is not valid percent-encoding' });
         return;
+      }
+      // Tolerate one canonical trailing slash, nothing more. Collapsing ALL
+      // empty segments would misroute /documents//update (an empty name
+      // interpolated by the caller) onto a document literally named
+      // "update"; the empty name must reach the guard below instead.
+      if (segments.length > 1 && segments[segments.length - 1] === '') {
+        segments.pop();
       }
       if (segments[0] !== 'documents' || segments.length < 2) {
         json(res, 404, { error: 'Unknown route' });
@@ -221,7 +228,9 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
           // straight to the live document could mutate it partially before
           // throwing. The caller's error must be refused with zero side
           // effects, and a genuine server fault below must stay a 500
-          // instead of masquerading as a 400.
+          // instead of masquerading as a 400. The write path deliberately
+          // pays about twice the update's integration cost for this; the
+          // body cap above bounds the worst case.
           try {
             Y.applyUpdate(new Y.Doc(), update);
           } catch {
@@ -241,8 +250,13 @@ export function createRestServer({ collabServer, tokens, readOnlyTokens = new Se
               Y.applyUpdate(document, update);
               // Content that arrives through this path was never seeded and
               // must never be: mark the document as owned so the websocket
-              // load does not inject welcome content on top of it.
-              document.getMap(META_MAP).set('seeded', true);
+              // load does not inject welcome content on top of it. Guarded,
+              // because Y.Map.set writes a fresh struct even for an equal
+              // value: unguarded, a byte-identical replayed POST (which the
+              // apply above no-ops) would still dirty the document and
+              // announce a change that did not happen.
+              const meta = document.getMap(META_MAP);
+              if (meta.get('seeded') !== true) meta.set('seeded', true);
             },
             true
           );
