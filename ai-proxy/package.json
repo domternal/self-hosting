@@ -2,6 +2,7 @@
   "name": "domternal-ai-proxy",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Streaming AI proxy for the Domternal Pro assistant: the provider key stays on your server",
   "scripts": {

@@ -9,7 +9,7 @@ ENV NODE_ENV=production
 # port actually listens in a bare run, not only under compose.
 ENV HOST=0.0.0.0 REST_HOST=0.0.0.0 REST_PORT=1235 SQLITE_PATH=/data/collab.sqlite
 WORKDIR /app
-COPY package.json ./
+COPY package.json LICENSE ./
 RUN npm install --omit=dev
 COPY index.mjs ./
 COPY src ./src

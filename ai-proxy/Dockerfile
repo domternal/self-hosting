@@ -7,7 +7,7 @@ ENV NODE_ENV=production
 # loopback default in index.mjs protects bare-metal runs, not this one.
 ENV HOST=0.0.0.0
 WORKDIR /app
-COPY package.json index.mjs ./
+COPY package.json index.mjs LICENSE ./
 COPY src ./src
 # Nothing here writes to disk, so nothing here needs root.
 USER node

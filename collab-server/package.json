@@ -2,6 +2,7 @@
   "name": "domternal-collab-server",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Reference Hocuspocus server for Domternal Pro collaboration",
   "scripts": {
