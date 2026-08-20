@@ -1,23 +1,56 @@
-# Built locally by docker-compose.yml; nothing is published as an image.
-# NODE_ENV=production arms the placeholder-token guards in index.mjs.
-FROM node:22-alpine
-ENV NODE_ENV=production
-# Containers must bind wide for the port mappings to reach the process; the
-# loopback default in index.mjs protects bare-metal runs, not this one. The
-# SQLite file lives under /data so a bare `docker run` works and compose can
-# mount its named volume over it. REST_PORT is baked so the EXPOSEd REST
-# port actually listens in a bare run, not only under compose.
-ENV HOST=0.0.0.0 REST_HOST=0.0.0.0 REST_PORT=1235 SQLITE_PATH=/data/collab.sqlite
+# Built locally by docker-compose.yml; this repository never pushes an image.
+# The exact tag makes the runtime version visible and the digest makes the
+# bytes immutable. Dependabot may refresh the digest without silently moving
+# this deployment to a new Node major.
+FROM node:22.23.2-alpine3.24@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS dependencies
 WORKDIR /app
-COPY package.json LICENSE ./
-RUN npm install --omit=dev
+
+# better-sqlite3 is deliberately compiled against this image instead of
+# trusting a separately distributed prebuilt binary. The compiler, make and
+# Python remain behind in this discarded stage.
+RUN apk add --no-cache g++ make python3
+ENV npm_config_build_from_source=true \
+    NPM_CONFIG_USERCONFIG=/dev/null \
+    NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
+    NPM_CONFIG_REPLACE_REGISTRY_HOST=never
+
+# npm ci refuses manifest/lock drift and never rewrites the committed lock.
+# The cache mount speeds rebuilds without copying npm's cache into the image.
+# The glob lets the policy checker print the intentional release-order blocker
+# when the lock is absent; default-deny .dockerignore admits no other match.
+COPY package*.json LICENSE ./
+COPY scripts/check-artifacts.mjs scripts/check-lockfile.mjs scripts/runtime-dependencies.mjs scripts/sqlite-maintenance.mjs ./scripts/
+RUN node scripts/check-lockfile.mjs /app
+# Fetch the frozen tree without executing arbitrary dependency lifecycle
+# scripts, then run only the reviewed native build that this service needs.
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci --omit=dev --ignore-scripts --strict-peer-deps --no-audit --no-fund && \
+    npm rebuild better-sqlite3 --omit=dev --build-from-source --no-audit --no-fund
 COPY index.mjs ./
 COPY src ./src
-# The server needs no root: only /data is written. The chown reaches a
-# compose named volume only when that volume is first created empty; a
-# volume that already exists from an older root-based image keeps its root
-# ownership and needs the one-time migration in the repository README.
+RUN npm ls --omit=dev --all && node scripts/check-artifacts.mjs /app
+
+# NODE_ENV=production arms the placeholder-token guards in index.mjs.
+FROM node:22.23.2-alpine3.24@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runtime
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    REST_HOST=0.0.0.0 \
+    REST_PORT=1235 \
+    SQLITE_PATH=/data/collab.sqlite
+WORKDIR /app
+COPY --from=dependencies --chown=node:node /app/package.json /app/package-lock.json /app/LICENSE ./
+COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node index.mjs ./
+COPY --chown=node:node src ./src
+COPY --chown=node:node scripts/check-artifacts.mjs scripts/check-lockfile.mjs scripts/runtime-dependencies.mjs scripts/sqlite-maintenance.mjs ./scripts/
+RUN node scripts/check-lockfile.mjs /app && node scripts/check-artifacts.mjs /app
+
+# Only /data is mutable. Docker copies this ownership into a new named volume;
+# an old root-owned volume needs the documented one-time migration.
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 1234 1235
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=5 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:1234/',{signal:AbortSignal.timeout(2000)}).then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 CMD ["node", "index.mjs"]
