@@ -1,0 +1,9 @@
+# Keep local secrets and generated files out of any repository this service is copied into.
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+node_modules/
+npm-debug.log*
+.DS_Store

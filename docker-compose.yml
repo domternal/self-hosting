@@ -1,66 +1,139 @@
-# Both reference backends, built locally from this repository. Compose fails
-# fast until the required secrets are set: copy .env.example to .env next to
-# this compose file and fill it in. Both containers run with
-# NODE_ENV=production, so the placeholder-token guards are active and
-# "change-me" values are refused.
+# Both reference backends are built locally; this file never pulls or pushes a
+# Domternal application image. Copy .env.example to .env and replace every
+# required empty value. Sensitive values become Compose-managed files under
+# /run/secrets, so they do not appear in the container environment or inspect
+# output. Runtime guards still reject empty and placeholder credentials.
 #
 # The AI proxy's gateway mode (AI_ALLOW_UNAUTHENTICATED=1 with no tokens) is
 # deliberately not wired here: it exists for setups where an authenticating
-# gateway fronts the proxy, and that gateway belongs in this file too. Drop
-# the :? from AI_TOKENS and forward AI_ALLOW_UNAUTHENTICATED when you add it.
+# gateway fronts the proxy, and that gateway belongs in this file too. Remove
+# the ai_tokens secret and forward AI_ALLOW_UNAUTHENTICATED when you add it.
 services:
   collab-server:
-    build: ./collab-server
+    build:
+      context: ./collab-server
+      pull: true
+      target: runtime
     # An init process reaps zombies and forwards SIGTERM, so `docker compose
     # stop` ends the container promptly instead of waiting out the kill grace.
     init: true
     restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
     ports:
       # Websocket for HocuspocusProvider.
-      - '1234:1234'
-      # REST API, published on loopback only; inside the container it must
-      # bind wide (0.0.0.0) for the port mapping to reach it.
-      - '127.0.0.1:1235:1235'
+      - '127.0.0.1:${COLLAB_HOST_PORT:-1234}:1234'
+      # REST API is intentionally host-loopback-only too.
+      - '127.0.0.1:${COLLAB_REST_HOST_PORT:-1235}:1235'
     environment:
-      COLLAB_TOKENS: ${COLLAB_TOKENS:?set COLLAB_TOKENS to a comma-separated list of secrets}
-      COLLAB_READONLY_TOKENS: ${COLLAB_READONLY_TOKENS:-}
+      COLLAB_TOKENS_FILE: /run/secrets/collab_tokens
+      COLLAB_READONLY_TOKENS_FILE: /run/secrets/collab_readonly_tokens
       # Container-internal wide bind; published on the host ports above.
       HOST: 0.0.0.0
       SQLITE_PATH: /data/collab.sqlite
       REST_PORT: '1235'
       REST_HOST: 0.0.0.0
+      # Empty is the secure default: production refuses the permissive
+      # document-wide starter callback. Set 1 only for an intentional
+      # single-tenant/global-token deployment; multi-tenant forks replace it.
+      COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS: ${COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS:-}
+      WS_MAX_PAYLOAD_BYTES: ${WS_MAX_PAYLOAD_BYTES:-8388608}
       WEBHOOK_URL: ${WEBHOOK_URL:-}
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      WEBHOOK_ALLOW_UNSIGNED: ${WEBHOOK_ALLOW_UNSIGNED:-}
+      WEBHOOK_ALLOW_INSECURE_HTTP: ${WEBHOOK_ALLOW_INSECURE_HTTP:-}
+      WEBHOOK_SECRET_FILE: /run/secrets/webhook_secret
+    secrets:
+      - collab_tokens
+      - collab_readonly_tokens
+      - webhook_secret
     volumes:
       - collab-data:/data
+    networks:
+      - collab-network
     healthcheck:
       # Hocuspocus answers a plain HTTP GET on the websocket port.
-      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:1234/').then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:1234/',{signal:AbortSignal.timeout(2000)}).then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: '3'
 
   ai-proxy:
-    build: ./ai-proxy
+    build:
+      context: ./ai-proxy
+      pull: true
     init: true
     restart: unless-stopped
+    # The process has its own 25s hard drain cap; Docker must wait longer.
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
     ports:
-      - '1250:1250'
+      - '127.0.0.1:${AI_HOST_PORT:-1250}:1250'
     environment:
       UPSTREAM_URL: ${UPSTREAM_URL:?set UPSTREAM_URL to your provider endpoint}
       PROVIDER: ${PROVIDER:-openai}
-      PROVIDER_API_KEY: ${PROVIDER_API_KEY:-}
-      AI_TOKENS: ${AI_TOKENS:?set AI_TOKENS to a comma-separated list of secrets}
+      UPSTREAM_ALLOW_INSECURE_HTTP: ${UPSTREAM_ALLOW_INSECURE_HTTP:-}
+      PROVIDER_API_KEY_FILE: /run/secrets/provider_api_key
+      AI_TOKENS_FILE: /run/secrets/ai_tokens
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-}
       # Container-internal wide bind; published on the host port above.
       HOST: 0.0.0.0
+    secrets:
+      - provider_api_key
+      - ai_tokens
+    networks:
+      - ai-network
     healthcheck:
-      # GET answers 405 by design; any HTTP answer proves the process alive.
-      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:1250/').then(()=>process.exit(0),()=>process.exit(1))"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      # GET must answer the proxy's deliberate 405, not merely any response.
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:1250/',{signal:AbortSignal.timeout(2000)}).then((r)=>process.exit(r.status===405?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: '3'
 
 volumes:
   collab-data:
+
+# The services do not talk to one another, so they do not share a bridge.
+networks:
+  collab-network:
+    driver: bridge
+  ai-network:
+    driver: bridge
+
+secrets:
+  collab_tokens:
+    environment: COLLAB_TOKENS
+  collab_readonly_tokens:
+    environment: COLLAB_READONLY_TOKENS
+  webhook_secret:
+    environment: WEBHOOK_SECRET
+  provider_api_key:
+    environment: PROVIDER_API_KEY
+  ai_tokens:
+    environment: AI_TOKENS

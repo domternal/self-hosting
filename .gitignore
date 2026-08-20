@@ -1,14 +1,51 @@
 node_modules/
 
-# Local secrets and local documents never belong in a template's history.
+# Local secrets, backups and documents never belong in template history.
 .env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+.envrc
+.direnv/
+secrets/
+backups/
 *.sqlite
 # SQLite side files carry document data too: a kill mid-transaction leaves a
 # -journal behind, and WAL mode adds -wal and -shm.
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+*.sqlite.backup
+*.sqlite.before-restore-*
+*.sqlite.restore-*
+# Common alternative SQLite names and every sidecar they can create.
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3.backup
+*.sqlite3.before-restore-*
+*.sqlite3.restore-*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.backup
+*.db.before-restore-*
+*.db.restore-*
+*.db3
+*.db3-journal
+*.db3-wal
+*.db3-shm
+*.db3.backup
+*.db3.before-restore-*
+*.db3.restore-*
+npm-debug.log*
+.DS_Store
 
-# Consumers of a template generate their own lockfiles.
-package-lock.json
+# The collaboration lockfile is a deploy artifact and MUST be committed.
+# Other package-manager locks are unsupported in this npm-based template.
 pnpm-lock.yaml
+yarn.lock
