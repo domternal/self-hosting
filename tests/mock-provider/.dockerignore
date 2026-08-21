@@ -1,0 +1,5 @@
+# Default-deny test fixture context.
+**
+!Dockerfile
+!package.json
+!index.mjs
