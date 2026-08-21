@@ -1,0 +1,243 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group: {}
+  workflow_dispatch: {}
+  schedule:
+    # Exercises the pinned runners and container toolchain when main is quiet.
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-hosting-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COLLAB_TOKENS: ci-only-not-a-secret-collab-writer
+  COLLAB_READONLY_TOKENS: ci-only-not-a-secret-collab-reader
+  WEBHOOK_URL: ''
+  WEBHOOK_SECRET: ''
+  COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS: '1'
+  WS_MAX_PAYLOAD_BYTES: '8388608'
+  WEBHOOK_ALLOW_UNSIGNED: ''
+  WEBHOOK_ALLOW_INSECURE_HTTP: ''
+  PROVIDER_API_KEY: ci-only-not-a-secret-provider-key
+  AI_TOKENS: ci-only-not-a-secret-ai-caller-0001
+  UPSTREAM_URL: http://mock-provider:1260/v1/chat/completions
+  PROVIDER: openai
+  UPSTREAM_ALLOW_INSECURE_HTTP: '1'
+  ALLOWED_ORIGINS: https://app.example.test
+  REQUEST_TIMEOUT_MS: '5000'
+
+jobs:
+  static-policy:
+    name: Static policy and syntax
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout without persisting credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify and run actionlint
+        # actionlint has no first-party JavaScript action. Verify the published
+        # archive digest and ignore any repository-controlled config.
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+            --output "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP" actionlint
+          printf '%s\n' '{}' > "$RUNNER_TEMP/actionlint.yaml"
+          "$RUNNER_TEMP/actionlint" -config-file "$RUNNER_TEMP/actionlint.yaml" -color
+
+      - name: Use the supported Node release
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          package-manager-cache: false
+
+      - name: Run dependency-free policy, syntax and unit tests
+        run: node --test tests/*.test.mjs
+
+      - name: Validate both Compose models without starting containers
+        run: |
+          set -euo pipefail
+          docker compose --file docker-compose.yml config --quiet
+          docker compose \
+            --file docker-compose.yml \
+            --file tests/docker-compose.e2e.yml \
+            config --quiet
+
+  dependency-lock:
+    name: Frozen npm dependency and provenance gates
+    needs: static-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      npm_config_build_from_source: 'true'
+      NPM_CONFIG_USERCONFIG: /dev/null
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+      NPM_CONFIG_REPLACE_REGISTRY_HOST: never
+    steps:
+      - name: Checkout without persisting credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use the supported Node release
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          package-manager-cache: false
+
+      - name: Require the real registry-produced deployment lock
+        run: node scripts/require-lockfile.mjs
+
+      - name: Frozen production install without lifecycle scripts
+        working-directory: collab-server
+        run: npm ci --omit=dev --ignore-scripts --strict-peer-deps --no-audit --no-fund
+
+      - name: Verify registry signatures
+        working-directory: collab-server
+        run: npm audit signatures
+
+      - name: Reject high or critical npm advisories
+        working-directory: collab-server
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Build only the reviewed native SQLite dependency
+        working-directory: collab-server
+        env:
+          npm_config_build_from_source: 'true'
+        run: npm rebuild better-sqlite3 --omit=dev --build-from-source --no-audit --no-fund
+
+      - name: Verify complete peer and production dependency closure
+        working-directory: collab-server
+        run: npm ls --omit=dev --all
+
+      - name: Verify deployed artifacts, notices and native SQLite
+        run: node collab-server/scripts/check-artifacts.mjs collab-server
+
+      - name: Exercise WAL-safe SQLite maintenance
+        run: node --test tests/sqlite-maintenance.test.mjs
+
+  containers:
+    name: Containers (${{ matrix.architecture }})
+    needs:
+      - static-policy
+      - dependency-lock
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      E2E_PROJECT_NAME: domternal-e2e-${{ github.run_id }}-${{ matrix.architecture }}
+      COLLAB_IMAGE_REF: domternal-self-hosting-collab-e2e:${{ github.run_id }}-${{ matrix.architecture }}
+      AI_IMAGE_REF: domternal-self-hosting-ai-e2e:${{ github.run_id }}-${{ matrix.architecture }}
+      MOCK_IMAGE_REF: domternal-self-hosting-mock-e2e:${{ github.run_id }}-${{ matrix.architecture }}
+    steps:
+      - name: Checkout without persisting credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use the supported Node release
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          package-manager-cache: false
+
+      - name: Run Dockerfile build checks
+        run: |
+          docker compose \
+            --project-name "$E2E_PROJECT_NAME" \
+            --file docker-compose.yml \
+            --file tests/docker-compose.e2e.yml \
+            build --check
+
+      - name: Build every local image without publishing
+        run: |
+          docker compose \
+            --project-name "$E2E_PROJECT_NAME" \
+            --file docker-compose.yml \
+            --file tests/docker-compose.e2e.yml \
+            build --pull
+
+      - name: Run ephemeral container end-to-end suite
+        run: node tests/container-e2e.mjs --skip-build
+
+      - name: Informative full collab vulnerability inventory
+        if: matrix.architecture == 'amd64'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.72.0 scanner
+        with:
+          image-ref: ${{ env.COLLAB_IMAGE_REF }}
+          format: table
+          exit-code: '0'
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          version: v0.72.0
+
+      - name: Block fixable high or critical collab vulnerabilities
+        if: matrix.architecture == 'amd64'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.72.0 scanner
+        with:
+          image-ref: ${{ env.COLLAB_IMAGE_REF }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          version: v0.72.0
+
+      - name: Informative full AI proxy vulnerability inventory
+        if: matrix.architecture == 'amd64'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.72.0 scanner
+        with:
+          image-ref: ${{ env.AI_IMAGE_REF }}
+          format: table
+          exit-code: '0'
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          version: v0.72.0
+
+      - name: Block fixable high or critical AI proxy vulnerabilities
+        if: matrix.architecture == 'amd64'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.72.0 scanner
+        with:
+          image-ref: ${{ env.AI_IMAGE_REF }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          version: v0.72.0
+
+      - name: Always remove ephemeral containers and volumes
+        if: always()
+        run: |
+          docker compose \
+            --project-name "$E2E_PROJECT_NAME" \
+            --file docker-compose.yml \
+            --file tests/docker-compose.e2e.yml \
+            down --volumes --remove-orphans --timeout 35
