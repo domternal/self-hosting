@@ -127,6 +127,31 @@ export function workflowTriggerProblems(text, path = 'workflow.yml') {
   return problems;
 }
 
+export function dependabotVersionUpdateProblems(
+  text,
+  path = '.github/dependabot.yml'
+) {
+  const problems = [];
+  const expectedEcosystems = ['npm', 'docker', 'github-actions'];
+  const sections = [...text.matchAll(/^\s*-\s+package-ecosystem:\s*['"]?([^'"\s#]+)['"]?\s*$/gmu)];
+
+  for (const ecosystem of expectedEcosystems) {
+    const matches = sections.filter((section) => section[1] === ecosystem);
+    if (matches.length !== 1) {
+      problems.push(`${path} must contain exactly one ${ecosystem} update entry`);
+      continue;
+    }
+    const section = matches[0];
+    const next = sections.find((candidate) => candidate.index > section.index);
+    const body = text.slice(section.index, next?.index ?? text.length);
+    if (!/^\s{4}open-pull-requests-limit:\s*0\s*(?:#.*)?$/mu.test(body)) {
+      problems.push(`${path} ${ecosystem} version updates must keep open-pull-requests-limit at 0`);
+    }
+  }
+
+  return problems;
+}
+
 function indentation(line) {
   return line.match(/^\s*/u)?.[0].length ?? 0;
 }
@@ -745,6 +770,7 @@ export function collectPolicyProblems(repositoryRoot) {
   const operations = read(root, 'OPERATIONS.md', problems);
   problems.push(...backupImportPolicyProblems(containerE2e, operations));
   const dependabot = read(root, '.github/dependabot.yml', problems);
+  problems.push(...dependabotVersionUpdateProblems(dependabot));
   for (const fragment of [
     'package-ecosystem: npm',
     'package-ecosystem: docker',

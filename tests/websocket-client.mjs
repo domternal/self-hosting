@@ -36,7 +36,7 @@ export async function runWebsocketClient({
     message.writeVarUint(MessageType.Auth);
     message.writeVarUint(0);
     message.writeVarString(token);
-    message.writeVarString('4.4.0');
+    message.writeVarString('4.6.0');
     return message.toUint8Array();
   }
 
