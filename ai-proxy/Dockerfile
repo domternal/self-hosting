@@ -6,6 +6,21 @@ ENV NODE_ENV=production
 # loopback default in index.mjs protects bare-metal runs, not this one.
 ENV HOST=0.0.0.0
 WORKDIR /app
+
+# Package managers are build-time tools. Remove them from the runtime image so
+# their unused dependency trees cannot add vulnerabilities or executable tools.
+RUN rm -rf \
+      /opt/yarn-v1.22.22 \
+      /usr/local/lib/node_modules/corepack \
+      /usr/local/lib/node_modules/npm && \
+    rm -f \
+      /usr/local/bin/corepack \
+      /usr/local/bin/npm \
+      /usr/local/bin/npx \
+      /usr/local/bin/pnpm \
+      /usr/local/bin/pnpx \
+      /usr/local/bin/yarn \
+      /usr/local/bin/yarnpkg
 COPY --chown=node:node package.json index.mjs LICENSE ./
 COPY --chown=node:node src ./src
 # Nothing here writes to disk, so nothing here needs root.
