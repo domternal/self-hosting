@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { EXACT_RUNTIME_DEPENDENCIES } from '../collab-server/scripts/check-artifacts.mjs';
 
 const NODE_IMAGE_TAG = 'node:22.23.2-alpine3.24';
+const RUNTIME_PACKAGE_MANAGER_CLEANUP_INSTRUCTION =
+  'RUN rm -rf /opt/yarn-v1.22.22 /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/npm && rm -f /usr/local/bin/corepack /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg';
 const AI_PRODUCTION_START =
   'node --env-file-if-exists=.env --input-type=module --eval "process.env.NODE_ENV=\'production\'; await import(\'./index.mjs\')"';
 const COLLAB_PRODUCTION_START =
@@ -321,6 +323,43 @@ export function finalDockerStageUserProblems(text, path = 'Dockerfile') {
   return problems;
 }
 
+function dockerLogicalInstructions(text) {
+  const instructions = [];
+  let pending = '';
+  for (const rawLine of text.split(/\r?\n/u)) {
+    const trimmed = rawLine.trim();
+    if (pending === '' && (trimmed === '' || trimmed.startsWith('#'))) continue;
+    const continued = /\\\s*$/u.test(rawLine);
+    const fragment = (continued ? rawLine.replace(/\\\s*$/u, '') : rawLine).trim();
+    pending = `${pending}${pending === '' || fragment === '' ? '' : ' '}${fragment}`;
+    if (!continued) {
+      if (pending !== '') instructions.push(pending);
+      pending = '';
+    }
+  }
+  return instructions;
+}
+
+export function runtimePackageManagerProblems(text, path = 'Dockerfile') {
+  const stageStarts = [...text.matchAll(/^FROM(?:\s|$)/gmu)];
+  if (stageStarts.length === 0) return [`${path} has no Docker stage`];
+  const finalStage = text.slice(stageStarts.at(-1).index);
+  const instructions = dockerLogicalInstructions(finalStage);
+  const cleanupIndexes = instructions
+    .map((instruction, index) =>
+      instruction === RUNTIME_PACKAGE_MANAGER_CLEANUP_INSTRUCTION ? index : -1
+    )
+    .filter((index) => index !== -1);
+  if (cleanupIndexes.length !== 1) {
+    return [`${path} final stage must remove the exact bundled npm, Corepack and Yarn tools`];
+  }
+  const firstUser = instructions.findIndex((instruction) => instruction.startsWith('USER '));
+  if (firstUser !== -1 && cleanupIndexes[0] > firstUser) {
+    return [`${path} must remove bundled package managers before dropping root privileges`];
+  }
+  return [];
+}
+
 function dockerfileProblems(text, path, expectedFromCount, expectedImage, problems) {
   if (/^#\s*syntax=/mu.test(text)) {
     problems.push(`${path} must use the daemon's bundled frontend, not a mutable external syntax image`);
@@ -449,6 +488,9 @@ export function collectPolicyProblems(repositoryRoot) {
     );
   }
   dockerfileProblems(collabDockerfile, 'collab-server/Dockerfile', 2, nodeImage, problems);
+  problems.push(
+    ...runtimePackageManagerProblems(collabDockerfile, 'collab-server/Dockerfile')
+  );
   for (const fragment of [
     'apk add --no-cache g++ make python3',
     'npm_config_build_from_source=true',
@@ -475,6 +517,7 @@ export function collectPolicyProblems(repositoryRoot) {
 
   const aiDockerfile = read(root, 'ai-proxy/Dockerfile', problems);
   dockerfileProblems(aiDockerfile, 'ai-proxy/Dockerfile', 1, nodeImage, problems);
+  problems.push(...runtimePackageManagerProblems(aiDockerfile, 'ai-proxy/Dockerfile'));
   if (/\b(?:npm|pnpm|yarn)\s+(?:install|ci)\b/u.test(aiDockerfile)) {
     problems.push('zero-dependency ai-proxy Dockerfile must not run a package-manager install');
   }

@@ -38,6 +38,21 @@ ENV NODE_ENV=production \
     REST_PORT=1235 \
     SQLITE_PATH=/data/collab.sqlite
 WORKDIR /app
+
+# Package managers are build-time tools. Remove them from the runtime image so
+# their unused dependency trees cannot add vulnerabilities or executable tools.
+RUN rm -rf \
+      /opt/yarn-v1.22.22 \
+      /usr/local/lib/node_modules/corepack \
+      /usr/local/lib/node_modules/npm && \
+    rm -f \
+      /usr/local/bin/corepack \
+      /usr/local/bin/npm \
+      /usr/local/bin/npx \
+      /usr/local/bin/pnpm \
+      /usr/local/bin/pnpx \
+      /usr/local/bin/yarn \
+      /usr/local/bin/yarnpkg
 COPY --from=dependencies --chown=node:node /app/package.json /app/package-lock.json /app/LICENSE ./
 COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node index.mjs ./

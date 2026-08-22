@@ -13,6 +13,7 @@ import {
   finalDockerStageUserProblems,
   requiredWorkflowEventProblems,
   rootPermissionProblems,
+  runtimePackageManagerProblems,
   workflowTriggerProblems,
 } from '../scripts/check-policy.mjs';
 import {
@@ -274,6 +275,29 @@ test('the final Docker stage cannot switch back to root', () => {
     finalDockerStageUserProblems('FROM node:22 AS build\nUSER node\nFROM node:22\n').join('\n'),
     /final stage must keep node/u
   );
+});
+
+test('production runtimes remove bundled package managers before dropping root', () => {
+  for (const path of ['collab-server/Dockerfile', 'ai-proxy/Dockerfile']) {
+    const source = readFileSync(resolve(root, path), 'utf8');
+    assert.deepEqual(runtimePackageManagerProblems(source, path), []);
+    assert.match(
+      runtimePackageManagerProblems(
+        source.replace('/usr/local/lib/node_modules/npm', '/tmp/incomplete-cleanup'),
+        path
+      ).join('\n'),
+      /exact bundled npm, Corepack and Yarn tools/u,
+      path
+    );
+    assert.match(
+      runtimePackageManagerProblems(
+        source.replace('RUN rm -rf \\\n', 'USER node\nRUN rm -rf \\\n'),
+        path
+      ).join('\n'),
+      /before dropping root privileges/u,
+      path
+    );
+  }
 });
 
 test('container E2E uses only isolated project names and refuses occupied resources', () => {

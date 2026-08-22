@@ -311,7 +311,7 @@ console.log(JSON.stringify({uid:process.getuid(),gid:process.getgid(),capEff:sta
     service,
     'sh',
     '-ec',
-    'for tool in g++ gcc make python python3; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool"; exit 1; fi; done',
+    'for path in /opt/yarn-v1.22.22 /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/npm /usr/local/bin/corepack /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg; do if [ -e "$path" ] || [ -L "$path" ]; then echo "$path"; exit 1; fi; done; for tool in corepack npm npx pnpm pnpx yarn yarnpkg g++ gcc make python python3; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool"; exit 1; fi; done',
   ]);
   assert.equal(tools.stdout, '');
 
