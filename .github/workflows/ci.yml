@@ -19,16 +19,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  COLLAB_TOKENS: ci-only-not-a-secret-collab-writer
-  COLLAB_READONLY_TOKENS: ci-only-not-a-secret-collab-reader
   WEBHOOK_URL: ''
-  WEBHOOK_SECRET: ''
   COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS: '1'
   WS_MAX_PAYLOAD_BYTES: '8388608'
   WEBHOOK_ALLOW_UNSIGNED: ''
   WEBHOOK_ALLOW_INSECURE_HTTP: ''
-  PROVIDER_API_KEY: ci-only-not-a-secret-provider-key
-  AI_TOKENS: ci-only-not-a-secret-ai-caller-0001
   UPSTREAM_URL: http://mock-provider:1260/v1/chat/completions
   PROVIDER: openai
   UPSTREAM_ALLOW_INSECURE_HTTP: '1'

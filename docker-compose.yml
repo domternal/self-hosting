@@ -1,8 +1,9 @@
 # Both reference backends are built locally; this file never pulls or pushes a
-# Domternal application image. Copy .env.example to .env and replace every
-# required empty value. Sensitive values become Compose-managed files under
-# /run/secrets, so they do not appear in the container environment or inspect
-# output. Runtime guards still reject empty and placeholder credentials.
+# Domternal application image. Copy .env.example to .env for non-secret
+# settings, then create the ignored host files under secrets/. Compose mounts
+# only the files each service needs under /run/secrets, so values do not appear
+# in the container environment or inspect output. Runtime guards still reject
+# empty and placeholder credentials.
 #
 # The AI proxy's gateway mode (AI_ALLOW_UNAUTHENTICATED=1 with no tokens) is
 # deliberately not wired here: it exists for setups where an authenticating
@@ -128,12 +129,12 @@ networks:
 
 secrets:
   collab_tokens:
-    environment: COLLAB_TOKENS
+    file: "${COLLAB_TOKENS_SOURCE_FILE:-./secrets/collab_tokens}"
   collab_readonly_tokens:
-    environment: COLLAB_READONLY_TOKENS
+    file: "${COLLAB_READONLY_TOKENS_SOURCE_FILE:-./secrets/collab_readonly_tokens}"
   webhook_secret:
-    environment: WEBHOOK_SECRET
+    file: "${WEBHOOK_SECRET_SOURCE_FILE:-./secrets/webhook_secret}"
   provider_api_key:
-    environment: PROVIDER_API_KEY
+    file: "${PROVIDER_API_KEY_SOURCE_FILE:-./secrets/provider_api_key}"
   ai_tokens:
-    environment: AI_TOKENS
+    file: "${AI_TOKENS_SOURCE_FILE:-./secrets/ai_tokens}"

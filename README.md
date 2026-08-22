@@ -58,27 +58,64 @@ npm start
 
 Or run both with Docker. Use Docker Engine with a current Docker Compose v2
 plugin, invoked as `docker compose`; legacy `docker-compose` and Podman Compose
-are not validated substitutes. Compose reads its variables from a `.env` next to
-`docker-compose.yml` (not from the per-service `.env` files), so the root
-`.env.example` lists exactly what it needs:
+are not validated substitutes. Compose reads non-secret settings and host
+secret-file paths from a `.env` next to `docker-compose.yml` (not from the
+per-service `.env` files):
 
 ```bash
-cp .env.example .env
+cp -n .env.example .env
 chmod 600 .env
-# Generate each token with: openssl rand -hex 32
-# Paste the results between the single quotes in .env.
+install -d -m 700 secrets
+(
+  set -euC
+  for path in \
+    secrets/collab_tokens \
+    secrets/collab_readonly_tokens \
+    secrets/webhook_secret \
+    secrets/provider_api_key \
+    secrets/ai_tokens
+  do
+    if [ -e "$path" ]; then
+      echo "Refusing to overwrite $path" >&2
+      exit 1
+    fi
+  done
+  umask 022
+  openssl rand -hex 32 > secrets/collab_tokens
+  openssl rand -hex 32 > secrets/ai_tokens
+  : > secrets/collab_readonly_tokens
+  : > secrets/webhook_secret
+  : > secrets/provider_api_key
+  chmod 644 \
+    secrets/collab_tokens \
+    secrets/collab_readonly_tokens \
+    secrets/webhook_secret \
+    secrets/provider_api_key \
+    secrets/ai_tokens
+)
+# Put the provider-issued API key in secrets/provider_api_key. Add independent
+# viewer tokens or a webhook signing key only when those features are enabled.
 # For an intentional single-tenant starter deployment, set
 # COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS='1'. Multi-tenant users must instead
 # replace authorizeDocument in collab-server/index.mjs before starting.
+docker compose config --quiet
 docker compose up --build
 ```
 
-Compose materializes sensitive values as files in `/run/secrets`; it does not
-place their values in container environment variables or image layers. The
-host `.env` is still sensitive and is ignored by Git. Never commit it. Direct
-`NAME` and `NAME_FILE` settings are mutually exclusive, so custom secret
-managers can mount their own file and point `NAME_FILE` at it without changing
-application code.
+`cp -n` keeps an existing `.env`, and the secret setup refuses to overwrite any
+existing source file. Edit or rotate existing settings deliberately instead of
+rerunning initialization over them.
+
+Compose bind-mounts each ignored host file read-only under `/run/secrets` only
+for the service that needs it; values do not enter the container environment or
+image layers. Mode `700` on the host directory blocks other host users, while
+mode `644` on files lets the fixed container uid 1000 read the bind mount.
+Compose does not implement uid/gid remapping for file-backed secrets, so mode
+`600` is not portable when host and container uids differ. Both `.env` and
+`secrets/` are ignored by Git and must never be committed. Override the five
+`*_SOURCE_FILE` values in `.env` when a host secret manager provides files at
+other paths; the applications continue to read the fixed `*_FILE` paths inside
+their containers.
 
 The shipped Compose posture is intentionally conservative:
 

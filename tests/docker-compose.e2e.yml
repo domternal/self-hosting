@@ -48,6 +48,7 @@ services:
       options:
         max-size: 5m
         max-file: '1'
+        compress: 'false'
 
   mock-webhook:
     image: ${MOCK_IMAGE_REF:-domternal-self-hosting-mock-e2e:local}
@@ -75,3 +76,4 @@ services:
       options:
         max-size: 5m
         max-file: '1'
+        compress: 'false'

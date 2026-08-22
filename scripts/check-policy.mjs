@@ -9,6 +9,36 @@ const AI_PRODUCTION_START =
   'node --env-file-if-exists=.env --input-type=module --eval "process.env.NODE_ENV=\'production\'; await import(\'./index.mjs\')"';
 const COLLAB_PRODUCTION_START =
   'node --env-file-if-exists=.env --input-type=module --eval "process.env.NODE_ENV=\'production\'; await import(\'./index.mjs\')"';
+const CONTAINER_BACKUP_IMPORT = [
+  '  compose(',
+  '    [',
+  "      'run',",
+  "      '--rm',",
+  "      '--no-deps',",
+  "      '--no-TTY',",
+  "      '--entrypoint',",
+  "      'sh',",
+  "      'collab-server',",
+  "      '-ec',",
+  `      'umask 077; set -C; cat > "$1"',`,
+  "      'sh',",
+  "      '/data/e2e-restore.sqlite',",
+  '    ],',
+  '    { input: readFileSync(hostBackup) }',
+  '  );',
+].join('\n');
+const DOCUMENTED_BACKUP_IMPORTS = [
+  [
+    'docker compose run --rm --no-deps -T \\',
+    '  --entrypoint sh collab-server \\',
+    `  -ec 'umask 077; set -C; cat > "$1"' sh "$verify_path" < "$backup_path"`,
+  ].join('\n'),
+  [
+    'docker compose run --rm --no-deps -T \\',
+    '  --entrypoint sh collab-server \\',
+    `  -ec 'umask 077; set -C; cat > "$1"' sh "$restore_input" < "$backup_path"`,
+  ].join('\n'),
+];
 
 function read(root, path, problems) {
   try {
@@ -216,10 +246,26 @@ export function composePolicyProblems(text, path = 'docker-compose.yml') {
     'COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS:',
     'WEBHOOK_ALLOW_INSECURE_HTTP:',
     'UPSTREAM_ALLOW_INSECURE_HTTP:',
-    'environment: COLLAB_TOKENS',
-    'environment: PROVIDER_API_KEY',
+    'file: "${COLLAB_TOKENS_SOURCE_FILE:-./secrets/collab_tokens}"',
+    'file: "${COLLAB_READONLY_TOKENS_SOURCE_FILE:-./secrets/collab_readonly_tokens}"',
+    'file: "${WEBHOOK_SECRET_SOURCE_FILE:-./secrets/webhook_secret}"',
+    'file: "${PROVIDER_API_KEY_SOURCE_FILE:-./secrets/provider_api_key}"',
+    'file: "${AI_TOKENS_SOURCE_FILE:-./secrets/ai_tokens}"',
   ]) {
     requireText(text, secret, path, problems);
+  }
+  for (const environmentSecret of [
+    'COLLAB_TOKENS',
+    'COLLAB_READONLY_TOKENS',
+    'WEBHOOK_SECRET',
+    'PROVIDER_API_KEY',
+    'AI_TOKENS',
+  ]) {
+    if (text.includes(`environment: ${environmentSecret}`)) {
+      problems.push(
+        `${path} must use file-backed secrets because environment-backed secrets are incompatible with read-only services`
+      );
+    }
   }
   for (const rawSecret of [
     'COLLAB_TOKENS',
@@ -237,6 +283,44 @@ export function composePolicyProblems(text, path = 'docker-compose.yml') {
   return problems;
 }
 
+export function backupImportPolicyProblems(containerE2e, operations) {
+  const problems = [];
+  if (count(containerE2e, CONTAINER_BACKUP_IMPORT) !== 1) {
+    problems.push(
+      'tests/container-e2e.mjs must use the exact binary-safe, no-clobber backup import contract'
+    );
+  }
+  if (/compose\(\s*\[\s*["']cp["']\s*,\s*hostBackup\s*,/u.test(containerE2e)) {
+    problems.push('tests/container-e2e.mjs must not copy a host backup into a container as root');
+  }
+  for (const expected of DOCUMENTED_BACKUP_IMPORTS) {
+    if (count(operations, expected) !== 1) {
+      problems.push(
+        'OPERATIONS.md must use the exact binary-safe, unprivileged backup import contract'
+      );
+    }
+  }
+  if (/^\s*docker compose cp\s+[^\n]*\$backup_path[^\n]*collab-server:/mu.test(operations)) {
+    problems.push('OPERATIONS.md must not copy a host backup into a container as root');
+  }
+  return problems;
+}
+
+export function finalDockerStageUserProblems(text, path = 'Dockerfile') {
+  const problems = [];
+  const stageStarts = [...text.matchAll(/^FROM(?:\s|$)/gmu)];
+  if (stageStarts.length === 0) {
+    problems.push(`${path} has no Docker stage`);
+    return problems;
+  }
+  const finalStage = text.slice(stageStarts.at(-1).index);
+  const users = [...finalStage.matchAll(/^USER\s+([^\s#]+)/gmu)].map((match) => match[1]);
+  if (users.at(-1) !== 'node') {
+    problems.push(`${path} final stage must keep node as its effective user`);
+  }
+  return problems;
+}
+
 function dockerfileProblems(text, path, expectedFromCount, expectedImage, problems) {
   if (/^#\s*syntax=/mu.test(text)) {
     problems.push(`${path} must use the daemon's bundled frontend, not a mutable external syntax image`);
@@ -248,7 +332,7 @@ function dockerfileProblems(text, path, expectedFromCount, expectedImage, proble
   for (const from of froms) {
     if (from !== `FROM ${expectedImage}`) problems.push(`${path} has unpinned or unexpected base: ${from}`);
   }
-  requireText(text, 'USER node', path, problems);
+  problems.push(...finalDockerStageUserProblems(text, path));
   requireText(text, 'STOPSIGNAL SIGTERM', path, problems);
   requireText(text, 'HEALTHCHECK', path, problems);
   requireText(text, '--chown=node:node', path, problems);
@@ -452,6 +536,11 @@ export function collectPolicyProblems(repositoryRoot) {
   requireText(e2eCompose, 'mock-webhook:', 'tests/docker-compose.e2e.yml', problems);
   requireText(e2eCompose, '- collab-network', 'tests/docker-compose.e2e.yml', problems);
   requireText(e2eCompose, '- ai-network', 'tests/docker-compose.e2e.yml', problems);
+  if (count(e2eCompose, "compress: 'false'") !== 2) {
+    problems.push(
+      'tests/docker-compose.e2e.yml must disable compression for both one-file mock logs'
+    );
+  }
   for (const imageName of ['COLLAB_IMAGE_REF', 'AI_IMAGE_REF', 'MOCK_IMAGE_REF']) {
     requireText(
       e2eCompose,
@@ -476,6 +565,8 @@ export function collectPolicyProblems(repositoryRoot) {
   for (const pattern of [
     '.envrc',
     '.direnv/',
+    'secrets/',
+    '.container-e2e-secrets-*/',
     '*.sqlite',
     '*.sqlite-journal',
     '*.sqlite-wal',
@@ -528,6 +619,8 @@ export function collectPolicyProblems(repositoryRoot) {
     'assert.equal(writerChangeCount, 1)',
     "WEBHOOK_URL: 'http://mock-webhook:1260/hooks/collab'",
     "WEBHOOK_ALLOW_INSECURE_HTTP: '1'",
+    "mkdtempSync(join(root, '.container-e2e-secrets-'))",
+    "['COLLAB_TOKENS_SOURCE_FILE', 'collab_tokens', WRITER_TOKEN]",
   ]) {
     requireText(containerE2e, fragment, 'tests/container-e2e.mjs', problems);
   }
@@ -542,11 +635,11 @@ export function collectPolicyProblems(repositoryRoot) {
   }
   const envExample = read(root, '.env.example', problems);
   for (const name of [
-    'COLLAB_TOKENS',
-    'COLLAB_READONLY_TOKENS',
-    'WEBHOOK_SECRET',
-    'PROVIDER_API_KEY',
-    'AI_TOKENS',
+    'COLLAB_TOKENS_SOURCE_FILE',
+    'COLLAB_READONLY_TOKENS_SOURCE_FILE',
+    'WEBHOOK_SECRET_SOURCE_FILE',
+    'PROVIDER_API_KEY_SOURCE_FILE',
+    'AI_TOKENS_SOURCE_FILE',
     'COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS',
   ]) {
     requireText(envExample, `${name}=`, '.env.example', problems);
@@ -606,6 +699,8 @@ export function collectPolicyProblems(repositoryRoot) {
   for (const path of ['OPERATIONS.md', 'docs/MAINTAINER-RELEASE-CHECKLIST.md', '.github/dependabot.yml']) {
     if (!existsSync(join(root, path))) problems.push(`${path} is missing`);
   }
+  const operations = read(root, 'OPERATIONS.md', problems);
+  problems.push(...backupImportPolicyProblems(containerE2e, operations));
   const dependabot = read(root, '.github/dependabot.yml', problems);
   for (const fragment of [
     'package-ecosystem: npm',

@@ -6,9 +6,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   actionReferenceProblems,
+  backupImportPolicyProblems,
   checkoutCredentialProblems,
   collectPolicyProblems,
   composePolicyProblems,
+  finalDockerStageUserProblems,
   requiredWorkflowEventProblems,
   rootPermissionProblems,
   workflowTriggerProblems,
@@ -167,9 +169,111 @@ secrets:
   );
 });
 
+test('read-only Compose services require every secret to come from a host file', () => {
+  const compose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
+  assert.deepEqual(composePolicyProblems(compose), []);
+  for (const [sourceVariable, defaultPath, directVariable] of [
+    ['COLLAB_TOKENS_SOURCE_FILE', './secrets/collab_tokens', 'COLLAB_TOKENS'],
+    [
+      'COLLAB_READONLY_TOKENS_SOURCE_FILE',
+      './secrets/collab_readonly_tokens',
+      'COLLAB_READONLY_TOKENS',
+    ],
+    ['WEBHOOK_SECRET_SOURCE_FILE', './secrets/webhook_secret', 'WEBHOOK_SECRET'],
+    ['PROVIDER_API_KEY_SOURCE_FILE', './secrets/provider_api_key', 'PROVIDER_API_KEY'],
+    ['AI_TOKENS_SOURCE_FILE', './secrets/ai_tokens', 'AI_TOKENS'],
+  ]) {
+    const fileSource = `    file: "\${${sourceVariable}:-${defaultPath}}"`;
+    const problems = composePolicyProblems(
+      compose.replace(fileSource, `    environment: ${directVariable}`)
+    );
+    assert.ok(
+      problems.some((problem) => problem.includes('incompatible with read-only services')),
+      sourceVariable
+    );
+  }
+});
+
 test('all E2E services are explicitly local-only', () => {
   const compose = readFileSync(resolve(root, 'tests/docker-compose.e2e.yml'), 'utf8');
   assert.equal((compose.match(/^\s+pull_policy:\s*never\s*$/gmu) ?? []).length, 4);
+});
+
+test('backup imports preserve binary bytes and unprivileged file ownership', () => {
+  const containerE2e = readFileSync(resolve(root, 'tests/container-e2e.mjs'), 'utf8');
+  const operations = readFileSync(resolve(root, 'OPERATIONS.md'), 'utf8');
+  assert.deepEqual(backupImportPolicyProblems(containerE2e, operations), []);
+
+  for (const [name, hostile] of [
+    ['TTY enabled', containerE2e.replace("      '--no-TTY',\n", '')],
+    [
+      'stdin removed',
+      containerE2e.replace('{ input: readFileSync(hostBackup) }', '{}'),
+    ],
+    ['cleanup removed', containerE2e.replace("      '--rm',\n", '')],
+    ['dependency isolation removed', containerE2e.replace("      '--no-deps',\n", '')],
+    [
+      'wrong service',
+      containerE2e.replace(
+        "      'sh',\n      'collab-server',\n      '-ec',",
+        "      'sh',\n      'ai-proxy',\n      '-ec',"
+      ),
+    ],
+    [
+      'wrong destination',
+      containerE2e.replace(
+        "      '/data/e2e-restore.sqlite',\n",
+        "      '/tmp/e2e-restore.sqlite',\n"
+      ),
+    ],
+    [
+      'root-owned copy restored',
+      `${containerE2e}\ncompose(['cp', hostBackup, 'collab-server:/data/e2e-restore.sqlite']);\n`,
+    ],
+    [
+      'double-quoted root-owned copy restored',
+      `${containerE2e}\ncompose(["cp", hostBackup, "collab-server:/data/e2e-restore.sqlite"]);\n`,
+    ],
+  ]) {
+    assert.notDeepEqual(backupImportPolicyProblems(hostile, operations), [], name);
+  }
+
+  for (const [name, hostile] of [
+    [
+      'documented TTY guard removed',
+      operations.replace('docker compose run --rm --no-deps -T', 'docker compose run --rm --no-deps'),
+    ],
+    [
+      'documented stdin removed',
+      operations.replace(' < "$backup_path"', ''),
+    ],
+    [
+      'documented root-owned copy restored',
+      `${operations}\ndocker compose cp $backup_path collab-server:/data/restore.sqlite\n`,
+    ],
+  ]) {
+    assert.notDeepEqual(backupImportPolicyProblems(containerE2e, hostile), [], name);
+  }
+});
+
+test('the final Docker stage cannot switch back to root', () => {
+  for (const path of [
+    'collab-server/Dockerfile',
+    'ai-proxy/Dockerfile',
+    'tests/mock-provider/Dockerfile',
+  ]) {
+    const source = readFileSync(resolve(root, path), 'utf8');
+    assert.deepEqual(finalDockerStageUserProblems(source, path), []);
+    assert.match(
+      finalDockerStageUserProblems(`${source}\nUSER root\n`, path).join('\n'),
+      /final stage must keep node/u
+    );
+  }
+
+  assert.match(
+    finalDockerStageUserProblems('FROM node:22 AS build\nUSER node\nFROM node:22\n').join('\n'),
+    /final stage must keep node/u
+  );
 });
 
 test('container E2E uses only isolated project names and refuses occupied resources', () => {

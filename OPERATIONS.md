@@ -4,8 +4,10 @@ This runbook covers the stateful collaboration service. The AI proxy stores no
 documents, prompts or provider replies on disk; your provider and reverse proxy
 can have separate retention policies outside this repository.
 
-Run commands from the repository root. Keep `.env` mode `600`, use an operator
-account allowed to run Docker, and take a backup before every upgrade or restore.
+Run commands from the repository root. Keep `.env` mode `600`, the ignored
+`secrets/` directory mode `700`, and its source files mode `644`. Use an
+operator account allowed to run Docker, and take a backup before every upgrade
+or restore.
 Membership in the Docker group is effectively root access to the host.
 These procedures require Docker Engine and a current Docker Compose v2 plugin,
 invoked as `docker compose`. Legacy `docker-compose` and Podman Compose are not
@@ -14,35 +16,85 @@ validated substitutes. Confirm `docker compose version` and run
 
 ## Secrets
 
-Generate independent high-entropy values:
+Create the default host files and generate independent high-entropy caller
+tokens:
 
 ```bash
-openssl rand -hex 32
+install -d -m 700 secrets
+(
+  set -euC
+  for path in \
+    secrets/collab_tokens \
+    secrets/collab_readonly_tokens \
+    secrets/webhook_secret \
+    secrets/provider_api_key \
+    secrets/ai_tokens
+  do
+    if [ -e "$path" ]; then
+      echo "Refusing to overwrite $path" >&2
+      exit 1
+    fi
+  done
+  umask 022
+  openssl rand -hex 32 > secrets/collab_tokens
+  openssl rand -hex 32 > secrets/ai_tokens
+  : > secrets/collab_readonly_tokens
+  : > secrets/webhook_secret
+  : > secrets/provider_api_key
+  chmod 644 \
+    secrets/collab_tokens \
+    secrets/collab_readonly_tokens \
+    secrets/webhook_secret \
+    secrets/provider_api_key \
+    secrets/ai_tokens
+)
 ```
 
-Paste each result between the single quotes in `.env`. Hex avoids commas,
-whitespace, `#`, `$` and Compose interpolation edge cases. For a zero-downtime
-token rotation, set the old and new token as one quoted comma-separated value,
-move clients to the new token, then remove the old token. Never reuse the AI
-caller token as the provider key or a collaboration token.
+The subshell refuses to overwrite any existing source file. Edit or rotate an
+existing deployment deliberately instead of rerunning initialization over it.
 
-Compose converts the five sensitive `.env` values into mounted files. A custom
-deployment can instead mount files from Vault, SOPS, systemd credentials,
-Kubernetes or Docker secrets and set the matching variables:
+Put the provider-issued key in `secrets/provider_api_key`. Leave the viewer and
+webhook files empty until those features are enabled, then add independent
+values. Hex avoids commas, whitespace and header metacharacters. Never reuse an
+AI caller token as a provider key or collaboration token.
 
-- `COLLAB_TOKENS_FILE`
-- `COLLAB_READONLY_TOKENS_FILE`
-- `WEBHOOK_SECRET_FILE`
-- `PROVIDER_API_KEY_FILE`
-- `AI_TOKENS_FILE`
+The host directory mode is the confidentiality boundary: mode `700` prevents
+other host users from traversing it. Files use mode `644` because Compose
+bind-mounts them read-only into containers and does not implement uid/gid
+remapping for file-backed secrets; mode `600` can make them unreadable when the
+host operator uid differs from container uid 1000. Each service receives only
+its declared files, and their contents never enter container environment
+variables or image layers.
 
-Set either `NAME` or `NAME_FILE`, never both. Secret files must be readable by
-the container's uid 1000, contain valid UTF-8, stay below 64 KiB, and may end in
-one or more line endings (they are trimmed). Production bearer and webhook
+The five host paths default under `./secrets`. Override them in `.env` when a
+host secret manager provides files elsewhere:
+
+- `COLLAB_TOKENS_SOURCE_FILE`
+- `COLLAB_READONLY_TOKENS_SOURCE_FILE`
+- `WEBHOOK_SECRET_SOURCE_FILE`
+- `PROVIDER_API_KEY_SOURCE_FILE`
+- `AI_TOKENS_SOURCE_FILE`
+
+The applications read the corresponding fixed `*_FILE` paths under
+`/run/secrets`. A custom orchestrator may mount Vault, SOPS, systemd,
+Kubernetes or Docker-managed files there. At the application level, set either
+`NAME` or `NAME_FILE`, never both.
+
+Secret files must contain valid UTF-8, stay below 64 KiB, and may end in one or
+more line endings because readers trim them. Production bearer and webhook
 secrets must contain at least 32 UTF-8 bytes; bearer tokens must also be
 header-safe and no larger than 4096 bytes. `openssl rand -hex 32` satisfies
-every rule. Errors never print
-the secret value.
+every token rule. Errors never print a secret value.
+
+For a zero-downtime caller-token rotation, put the old and new tokens in the
+same comma-separated source file, recreate that service, move clients to the
+new token, remove the old token, then recreate the service again. Recreating
+remounts the current host file even when a secret manager replaces it atomically:
+
+```bash
+docker compose up --detach --force-recreate collab-server
+docker compose up --detach --force-recreate ai-proxy
+```
 
 Hosted-provider upstreams and webhooks use HTTPS in production by default.
 `UPSTREAM_ALLOW_INSECURE_HTTP=1` and `WEBHOOK_ALLOW_INSECURE_HTTP=1` exist only
@@ -111,16 +163,28 @@ documented retention schedule. A backup contains document contents, comments,
 versions and metadata in plaintext. Record the application Git revision next to
 it, but never put the backup itself in Git.
 
+The imports below intentionally stream bytes through a non-TTY one-off
+container. Docker copy semantics make a destination inside a container
+[root-owned by default](https://docs.docker.com/reference/cli/docker/container/cp/),
+but this image runs as uid 1000. Streaming preserves binary SQLite bytes and
+creates the file as the unprivileged service user with mode `600`; no-clobber
+mode refuses an existing destination.
+
 Verify a copied backup independently:
 
 ```bash
 set -eu
 verify_path="/data/.collab-backup-verify-$(date -u +%Y%m%dT%H%M%SZ)-$$.sqlite"
-docker compose cp "$backup_path" "collab-server:$verify_path"
+docker compose run --rm --no-deps -T \
+  --entrypoint sh collab-server \
+  -ec 'umask 077; set -C; cat > "$1"' sh "$verify_path" < "$backup_path"
 docker compose exec -T collab-server \
   node scripts/sqlite-maintenance.mjs check "$verify_path"
 docker compose exec -T collab-server rm -f "$verify_path"
 ```
+
+If the integrity check fails, keep the unique verification file while
+diagnosing it, then rerun the final removal command with that exact path.
 
 Periodically perform the full restore drill below on an isolated Compose project.
 A backup that has never been restored is only an assumption.
@@ -141,7 +205,9 @@ backup_path='backups/collab-YYYYMMDDTHHMMSSZ.sqlite'
 restore_input="/data/restore-input-$(date -u +%Y%m%dT%H%M%SZ)-$$.sqlite"
 
 docker compose stop --timeout 30 collab-server
-docker compose cp "$backup_path" "collab-server:$restore_input"
+docker compose run --rm --no-deps -T \
+  --entrypoint sh collab-server \
+  -ec 'umask 077; set -C; cat > "$1"' sh "$restore_input" < "$backup_path"
 docker compose run --rm --no-deps \
   --env COLLAB_MAINTENANCE_OFFLINE=1 \
   --entrypoint node collab-server \
@@ -157,6 +223,15 @@ The command prints the exact `/data/collab.sqlite.before-restore-*` rollback
 path. Keep it until users verify current documents and versions. Remove that
 rollback file only after the retention decision; the command block removes its
 unique restore input after the integrity check succeeds.
+
+If an import or restore step fails, keep the collaboration service stopped and
+retain the unique input while diagnosing it. Remove only that exact path when
+you no longer need it:
+
+```bash
+docker compose run --rm --no-deps --entrypoint rm collab-server \
+  -f -- "$restore_input"
+```
 
 If restore refuses because the current database cannot produce a verified
 rollback, do not force deletion. Preserve the whole volume or its raw database,

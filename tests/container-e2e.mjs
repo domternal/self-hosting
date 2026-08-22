@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -90,16 +90,33 @@ function freePort() {
 
 const [collabPort, restPort, aiPort] = await Promise.all([freePort(), freePort(), freePort()]);
 const scratch = mkdtempSync(join(tmpdir(), 'domternal-container-e2e-'));
+const secretScratch = mkdtempSync(join(root, '.container-e2e-secrets-'));
+chmodSync(secretScratch, 0o700);
+const secretSourceEnvironment = {};
+try {
+  for (const [environmentName, fileName, value] of [
+    ['COLLAB_TOKENS_SOURCE_FILE', 'collab_tokens', WRITER_TOKEN],
+    ['COLLAB_READONLY_TOKENS_SOURCE_FILE', 'collab_readonly_tokens', READER_TOKEN],
+    ['WEBHOOK_SECRET_SOURCE_FILE', 'webhook_secret', WEBHOOK_SECRET],
+    ['PROVIDER_API_KEY_SOURCE_FILE', 'provider_api_key', PROVIDER_KEY],
+    ['AI_TOKENS_SOURCE_FILE', 'ai_tokens', AI_TOKEN],
+  ]) {
+    const path = join(secretScratch, fileName);
+    writeFileSync(path, `${value}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o644 });
+    chmodSync(path, 0o644);
+    secretSourceEnvironment[environmentName] = path;
+  }
+} catch (error) {
+  rmSync(secretScratch, { recursive: true, force: true });
+  rmSync(scratch, { recursive: true, force: true });
+  throw error;
+}
 const testEnvironment = {
   ...process.env,
-  COLLAB_TOKENS: WRITER_TOKEN,
-  COLLAB_READONLY_TOKENS: READER_TOKEN,
+  ...secretSourceEnvironment,
   COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS: '1',
   WEBHOOK_URL: 'http://mock-webhook:1260/hooks/collab',
-  WEBHOOK_SECRET,
   WEBHOOK_ALLOW_INSECURE_HTTP: '1',
-  PROVIDER_API_KEY: PROVIDER_KEY,
-  AI_TOKENS: AI_TOKEN,
   UPSTREAM_URL: 'http://mock-provider:1260/v1/chat/completions',
   PROVIDER: 'openai',
   UPSTREAM_ALLOW_INSECURE_HTTP: '1',
@@ -327,8 +344,10 @@ console.log(JSON.stringify({uid:process.getuid(),gid:process.getgid(),capEff:sta
   );
   const mounts = new Map((inspection.Mounts ?? []).map((mount) => [mount.Destination, mount]));
   for (const { path } of secretFiles) {
-    assert.ok(mounts.has(path), `${service} is missing the declared secret mount ${path}`);
-    assert.equal(mounts.get(path).RW, false, `${path} mount must be read-only`);
+    const mount = mounts.get(path);
+    assert.ok(mount, `${service} is missing the declared secret mount ${path}`);
+    assert.equal(mount.Type, 'bind', `${path} must be a single-file bind mount`);
+    assert.equal(mount.RW, false, `${path} must be mounted read-only`);
   }
   if (dataWritable) {
     assert.equal(mounts.get('/data')?.Type, 'volume');
@@ -582,7 +601,22 @@ async function exerciseCollab() {
     compose(['logs', '--no-color', 'collab-server']).stdout,
     /Graceful shutdown complete/u
   );
-  compose(['cp', hostBackup, 'collab-server:/data/e2e-restore.sqlite']);
+  compose(
+    [
+      'run',
+      '--rm',
+      '--no-deps',
+      '--no-TTY',
+      '--entrypoint',
+      'sh',
+      'collab-server',
+      '-ec',
+      'umask 077; set -C; cat > "$1"',
+      'sh',
+      '/data/e2e-restore.sqlite',
+    ],
+    { input: readFileSync(hostBackup) }
+  );
   const restore = compose([
     'run',
     '--rm',
@@ -773,7 +807,10 @@ try {
     }
   } else {
     console.log(`[container-e2e] --keep selected; Compose project ${project} remains running`);
+    console.log(`[container-e2e] E2E secret sources remain at ${secretScratch}`);
+    console.log('[container-e2e] Run the matching Compose down command before removing that directory');
   }
+  if (!keep) rmSync(secretScratch, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
 }
 if (failed) process.exitCode = 1;

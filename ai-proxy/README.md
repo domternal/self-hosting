@@ -37,10 +37,11 @@ cannot weaken the guards. Placeholder or weak credentials fail before the
 listener starts.
 
 For mounted secrets, set `PROVIDER_API_KEY_FILE` or `AI_TOKENS_FILE` instead of
-the matching direct variable; never set both. The root Compose file uses these
-file forms so secret values do not appear in the container environment. See the
-root [`OPERATIONS.md`](../OPERATIONS.md) for safe generation and rotation. If
-you copy only this service directory, copy and adapt that runbook too.
+the matching direct variable; never set both. The root Compose file mounts
+ignored host source files through these file forms, so secret values do not
+appear in the container environment. See the root
+[`OPERATIONS.md`](../OPERATIONS.md) for safe generation and rotation. If you
+copy only this service directory, copy and adapt that runbook too.
 
 Check it works before wiring the editor. The openai-chat dialect is shown, and the bearer value is one of your `AI_TOKENS`:
 

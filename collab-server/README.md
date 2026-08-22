@@ -49,8 +49,9 @@ suppress every dependency lifecycle script and then run only the reviewed
 native SQLite build. For
 mounted secrets, set `COLLAB_TOKENS_FILE`,
 `COLLAB_READONLY_TOKENS_FILE` or `WEBHOOK_SECRET_FILE` instead of the matching
-direct variable. Never set both forms. The root Compose file does this by
-default, keeping secret values out of the container environment.
+direct variable. Never set both forms. The root Compose file mounts ignored
+host source files by default, keeping secret values out of the container
+environment.
 
 For database integrity, consistent backup and WAL-safe restore procedures, use
 the root [`OPERATIONS.md`](../OPERATIONS.md) runbook. If you copy only this

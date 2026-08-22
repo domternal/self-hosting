@@ -10,6 +10,7 @@ node_modules/
 .envrc
 .direnv/
 secrets/
+.container-e2e-secrets-*/
 backups/
 *.sqlite
 # SQLite side files carry document data too: a kill mid-transaction leaves a
