@@ -14,6 +14,7 @@ import {
   dependencyUpdateScriptProblems,
   dependencyUpdateWorkflowProblems,
   finalDockerStageUserProblems,
+  issueRoutingProblems,
   requiredWorkflowEventProblems,
   rootPermissionProblems,
   runtimePackageManagerProblems,
@@ -31,6 +32,10 @@ const dependencyUpdateWorkflow = readFileSync(
 );
 const dependencyUpdateScript = readFileSync(
   resolve(root, 'scripts/check-updates.mjs'),
+  'utf8'
+);
+const issueRouting = readFileSync(
+  resolve(root, '.github/ISSUE_TEMPLATE/config.yml'),
   'utf8'
 );
 
@@ -52,6 +57,22 @@ test('public Dependabot entries cannot reopen duplicate version update PRs', () 
       dependabot.replace(/\n\s*- package-ecosystem: docker[\s\S]*?(?=\n\s*- package-ecosystem: github-actions)/u, '')
     ).join('\n'),
     /exactly one docker update entry/u
+  );
+});
+
+test('the issue chooser routes public reports to the central tracker', () => {
+  assert.deepEqual(issueRoutingProblems(issueRouting), []);
+  assert.match(
+    issueRoutingProblems(
+      issueRouting.replace('blank_issues_enabled: false', 'blank_issues_enabled: true')
+    ).join('\n'),
+    /blank_issues_enabled: false/u
+  );
+  assert.match(
+    issueRoutingProblems(
+      issueRouting.replace('self_hosting_bug_report.yml', 'pro_bug_report.yml')
+    ).join('\n'),
+    /self_hosting_bug_report.yml/u
   );
 });
 

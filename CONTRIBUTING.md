@@ -12,7 +12,9 @@ Thank you for helping improve the Domternal self-hosting reference services.
 
 Issues for this repository are intentionally centralized in the public
 [`domternal/domternal` tracker](https://github.com/domternal/domternal/issues).
-Link that issue from a pull request when one exists.
+Use the dedicated
+[self-hosting report form](https://github.com/domternal/domternal/issues/new?template=self_hosting_bug_report.yml)
+for defects and link that issue from a pull request when one exists.
 
 ## Source-of-truth workflow
 

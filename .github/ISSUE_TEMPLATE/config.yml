@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a self-hosting bug
+    url: https://github.com/domternal/domternal/issues/new?template=self_hosting_bug_report.yml
+    about: Report collaboration server, AI proxy, Docker or operational problems in the central tracker.
+  - name: Request an improvement
+    url: https://github.com/domternal/domternal/issues/new?template=feature_request.yml
+    about: Suggest a self-hosting feature or improvement in the central tracker.
+  - name: Self-hosting documentation
+    url: https://domternal.dev/v1/pro/self-hosting/
+    about: Read the setup, deployment and operational guides first.
+  - name: Report a security vulnerability
+    url: https://github.com/domternal/self-hosting/security/policy
+    about: Use the private security instructions instead of a public issue.

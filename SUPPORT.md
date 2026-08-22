@@ -12,11 +12,9 @@ is in the [Domternal self-hosting documentation](https://domternal.dev/v1/pro/se
 
 This repository keeps ordinary reports in one public place. Search or open an
 issue using the central
-[`domternal/domternal` Pro report form](https://github.com/domternal/domternal/issues/new?template=pro_bug_report.yml)
-and identify the affected self-hosting service and revision. Select `Not sure`
-for the package and `Not framework-specific` when the problem belongs to a
-reference server. Issues are disabled here to avoid splitting the same support
-history across repositories.
+[`domternal/domternal` self-hosting report form](https://github.com/domternal/domternal/issues/new?template=self_hosting_bug_report.yml)
+and identify the affected service and revision. This repository's issue chooser
+contains links only, so reports remain searchable in one central tracker.
 
 Include a minimal reproduction, relevant sanitized logs, the host architecture,
 Node or Docker version and the exact command that failed. Never include tokens,

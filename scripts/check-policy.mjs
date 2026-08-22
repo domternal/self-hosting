@@ -152,6 +152,22 @@ export function dependabotVersionUpdateProblems(
   return problems;
 }
 
+export function issueRoutingProblems(
+  text,
+  path = '.github/ISSUE_TEMPLATE/config.yml'
+) {
+  const problems = [];
+  for (const fragment of [
+    'blank_issues_enabled: false',
+    'https://github.com/domternal/domternal/issues/new?template=self_hosting_bug_report.yml',
+    'https://github.com/domternal/domternal/issues/new?template=feature_request.yml',
+    'https://github.com/domternal/self-hosting/security/policy',
+  ]) {
+    requireText(text, fragment, path, problems);
+  }
+  return problems;
+}
+
 function indentation(line) {
   return line.match(/^\s*/u)?.[0].length ?? 0;
 }
@@ -908,11 +924,14 @@ export function collectPolicyProblems(repositoryRoot) {
     'OPERATIONS.md',
     'docs/MAINTAINER-RELEASE-CHECKLIST.md',
     '.github/dependabot.yml',
+    '.github/ISSUE_TEMPLATE/config.yml',
     '.github/pull_request_template.md',
     'scripts/check-updates.mjs',
   ]) {
     if (!existsSync(join(root, path))) problems.push(`${path} is missing`);
   }
+  const issueRouting = read(root, '.github/ISSUE_TEMPLATE/config.yml', problems);
+  problems.push(...issueRoutingProblems(issueRouting));
   const operations = read(root, 'OPERATIONS.md', problems);
   problems.push(...backupImportPolicyProblems(containerE2e, operations));
   const dependabot = read(root, '.github/dependabot.yml', problems);

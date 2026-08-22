@@ -88,8 +88,9 @@ After publishing both packages:
 ## GitHub repository setup
 
 - Enable the repository's template setting so the README's `Use this template`
-  instruction matches GitHub's interface. Keep local Issues disabled and route
-  ordinary reports through `SUPPORT.md` to the central public tracker.
+  instruction matches GitHub's interface. Keep Issues enabled only as a routed
+  chooser: blank reports stay disabled and every public contact link leads to
+  the central tracker, documentation or private security policy.
 - Enable private vulnerability reporting, Dependency graph, Dependabot alerts,
   Dependabot malware alerts, Secret Protection and push protection. Keep
   Dependabot security updates, grouped security updates and every rule that
