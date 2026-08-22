@@ -166,8 +166,13 @@ build locally (never push), start an ephemeral stack, and check
 non-root/read-only/capability policy, mounted secrets, health, REST auth, native
 SQLite, persistence across restart, consistent backup/restore, commercial
 notices, AI streaming/CORS/error behavior and cleanup. CodeQL, dependency
-review, Dependabot and two-stage Trivy scanning cover ongoing supply-chain
-drift; Trivy reports everything and blocks fixable high/critical findings.
+review, Dependabot vulnerability alerts, a weekly read-only upstream-version
+report and two-stage Trivy scanning cover ongoing supply-chain drift. The
+version report creates no branch, pull request or issue; Trivy reports
+everything and blocks fixable high/critical findings. The report covers exact
+runtime npm dependencies, the latest Node LTS, Node Docker patch and digest
+drift, Alpine base lines, pinned GitHub Actions, actionlint and Trivy. A known
+incompatible update remains visible as a weekly reminder until it is reviewed.
 
 Until that lock can be generated, CI intentionally stops at the dependency
 gate instead of substituting a private workspace or hand-written artifact; the
@@ -199,6 +204,12 @@ aggregate body limits. The application limits each request or frame, but many
 individually valid concurrent requests can still consume memory or provider
 budget.
 
-## Support and license
+## Support, contributions and license
 
-This repository is MIT licensed and provided as is: it is a starting point you own and adapt, not a managed product, and it is not covered by Domternal Pro support plans, which cover the editor packages. The `@domternal-pro` packages it installs are not MIT: they remain under the [Domternal Pro commercial license](https://domternal.dev/license/), and running them in production needs a license key. The full guide lives in the [self-hosting documentation](https://domternal.dev/v1/pro/self-hosting/), and problems and suggestions are welcome on the [issue tracker](https://github.com/domternal/domternal/issues). Security problems are the one exception: report them privately to [security@domternal.dev](mailto:security@domternal.dev) as [SECURITY.md](./SECURITY.md) describes, never on the public tracker.
+This repository is MIT licensed and provided as is: it is a starting point you
+own and adapt, not a managed product. The `@domternal-pro` packages it installs
+remain under the [Domternal Pro commercial license](https://domternal.dev/license/),
+and running them in production needs a license key. See [SUPPORT.md](./SUPPORT.md)
+for help and defect reporting, [CONTRIBUTING.md](./CONTRIBUTING.md) before
+proposing a change, and [SECURITY.md](./SECURITY.md) for private vulnerability
+reporting.

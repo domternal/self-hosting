@@ -68,9 +68,10 @@ After publishing both packages:
 - All `uses:` entries remain pinned to full commit SHAs and checkout never
   persists credentials.
 - Node remains an exact supported tag plus digest; a major change needs explicit
-  compatibility proof on both architectures. Dependabot groups the shared
-  `node` dependency across all three Docker directories; never merge a partial
-  digest bump that leaves production and E2E on different base bytes.
+  compatibility proof on both architectures. The read-only dependency update
+  report checks the shared `node` tag and digest across all three Docker
+  directories; never merge a partial bump that leaves production and E2E on
+  different base bytes.
 - Docker contexts remain default-deny and no `.env`, database, backup, Git data
   or unrelated source reaches a builder.
 - Compose continues to expose only loopback by default, mount secrets as files,
@@ -86,6 +87,15 @@ After publishing both packages:
 
 ## GitHub repository setup
 
+- Enable the repository's template setting so the README's `Use this template`
+  instruction matches GitHub's interface. Keep Issues enabled only as a routed
+  chooser: blank reports stay disabled and every public contact link leads to
+  the central tracker, documentation or private security policy.
+- Enable private vulnerability reporting, Dependency graph, Dependabot alerts,
+  Dependabot malware alerts, Secret Protection and push protection. Keep
+  Dependabot security updates, grouped security updates and every rule that
+  opens an automatic pull request disabled. The checked-in zero limits keep
+  routine Dependabot version PRs disabled as well.
 - Keep GitHub CodeQL default setup disabled. This repository commits an
   advanced CodeQL workflow, and GitHub rejects advanced SARIF uploads while
   default setup is enabled.
@@ -103,3 +113,11 @@ After publishing both packages:
 - Keep Actions workflow permissions read-only by default. Checkout steps must
   set `persist-credentials: false`; only the CodeQL analysis job receives
   `security-events: write` for its SARIF upload.
+- Enable GitHub Actions web or email notifications, preferably only for failed
+  workflows. The weekly dependency update report intentionally fails when it
+  finds a new version, an acknowledged incompatible update or cannot complete
+  every upstream lookup. The two Pro package lookups remain incomplete until
+  those packages are public. Review its job summary manually; never make it a
+  required pull-request check. GitHub automatically disables scheduled
+  workflows in a public repository after 60 days without repository activity;
+  re-enable this workflow from the Actions tab if that happens.

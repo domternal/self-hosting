@@ -152,6 +152,22 @@ export function dependabotVersionUpdateProblems(
   return problems;
 }
 
+export function issueRoutingProblems(
+  text,
+  path = '.github/ISSUE_TEMPLATE/config.yml'
+) {
+  const problems = [];
+  for (const fragment of [
+    'blank_issues_enabled: false',
+    'https://github.com/domternal/domternal/issues/new?template=self_hosting_bug_report.yml',
+    'https://github.com/domternal/domternal/issues/new?template=feature_request.yml',
+    'https://github.com/domternal/self-hosting/security/policy',
+  ]) {
+    requireText(text, fragment, path, problems);
+  }
+  return problems;
+}
+
 function indentation(line) {
   return line.match(/^\s*/u)?.[0].length ?? 0;
 }
@@ -239,6 +255,128 @@ export function requiredWorkflowEventProblems(
     if (!/^\s{4}branches:\s*\[main\]\s*(?:#.*)?$/mu.test(block)) {
       problems.push(`${path} ${event} must be limited to main`);
     }
+  }
+  return problems;
+}
+
+export function dependencyUpdateWorkflowProblems(
+  text,
+  path = '.github/workflows/dependency-update-report.yml'
+) {
+  const problems = [
+    ...requiredWorkflowEventProblems(text, path, ['schedule', 'workflow_dispatch']),
+    ...rootPermissionProblems(text, path),
+    ...checkoutCredentialProblems(text, path),
+    ...actionReferenceProblems(text, path),
+    ...workflowTriggerProblems(text, path),
+  ];
+  const lines = text.split(/\r?\n/u);
+  const onStart = lines.findIndex((line) => line.trim() === 'on:' && indentation(line) === 0);
+  const events = [];
+  if (onStart !== -1) {
+    for (let index = onStart + 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
+      if (indentation(line) === 0) break;
+      const match = line.match(/^\s{2}([a-z_]+):/u);
+      if (match) events.push(match[1]);
+    }
+  }
+  const expectedEvents = new Set(['schedule', 'workflow_dispatch']);
+  for (const event of events) {
+    if (!expectedEvents.has(event)) {
+      problems.push(`${path} must not run on ${event}`);
+    }
+  }
+
+  for (const fragment of [
+    "cron: '17 6 * * 1'",
+    'runs-on: ubuntu-24.04',
+    'timeout-minutes: 10',
+    'node-version: 22.23.2',
+    'package-manager-cache: false',
+    'GITHUB_TOKEN: ${{ github.token }}',
+    'run: node scripts/check-updates.mjs',
+  ]) {
+    requireText(text, fragment, path, problems);
+  }
+
+  const actionReferences = [...text.matchAll(/^\s*uses:\s*([^\s#]+)/gmu)].map(
+    (match) => match[1]
+  );
+  const expectedActions = [
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
+  ];
+  if (
+    actionReferences.length !== expectedActions.length ||
+    expectedActions.some((reference) => !actionReferences.includes(reference))
+  ) {
+    problems.push(`${path} may use only the reviewed checkout and setup-node actions`);
+  }
+  if ((text.match(/^\s*run:/gmu) ?? []).length !== 1) {
+    problems.push(`${path} must execute exactly one local read-only command`);
+  }
+  if ((text.match(/^\s*permissions:/gmu) ?? []).length !== 1) {
+    problems.push(`${path} must declare permissions only once at the top level`);
+  }
+  if (/^\s*permissions:\s*write-all\s*(?:#.*)?$/mu.test(text)) {
+    problems.push(`${path} must not grant write-all permissions`);
+  }
+  if (/^\s+[a-z-]+:\s*write\s*(?:#.*)?$/mu.test(text)) {
+    problems.push(`${path} must not grant write permissions at any scope`);
+  }
+  if (/\b(?:git\s+push|gh\s+(?:issue|pr|release)|npm\s+publish|docker\s+push)\b/u.test(text)) {
+    problems.push(`${path} must not create, publish or push anything`);
+  }
+  return problems;
+}
+
+export function dependencyUpdateScriptProblems(
+  text,
+  path = 'scripts/check-updates.mjs'
+) {
+  const problems = [];
+  const originBlock = text.match(
+    /const ALLOWED_ORIGINS = new Set\(\[([\s\S]*?)\]\);/u
+  )?.[1] ?? '';
+  const origins = [...originBlock.matchAll(/['"](https:\/\/[^/'"]+)['"]/gu)]
+    .map((match) => match[1])
+    .sort();
+  const expectedOrigins = [
+    'https://api.github.com',
+    'https://hub.docker.com',
+    'https://nodejs.org',
+    'https://registry.npmjs.org',
+  ].sort();
+  if (JSON.stringify(origins) !== JSON.stringify(expectedOrigins)) {
+    problems.push(`${path} must keep the exact reviewed metadata origin allowlist`);
+  }
+
+  const fsImport = text.match(/import \{([^}]+)\} from 'node:fs';/u)?.[1] ?? '';
+  const fsFunctions = fsImport.split(',').map((name) => name.trim()).filter(Boolean).sort();
+  const expectedFsFunctions = ['appendFileSync', 'readFileSync', 'readdirSync'].sort();
+  if (JSON.stringify(fsFunctions) !== JSON.stringify(expectedFsFunctions)) {
+    problems.push(`${path} may only read repository files and append the Actions summary`);
+  }
+  if (/from ['"]node:(?:child_process|dgram|http|https|net|tls|worker_threads)['"]/u.test(text)) {
+    problems.push(`${path} must not import process execution or raw network modules`);
+  }
+  if ((text.match(/\bfetchImpl\s*\(/gu) ?? []).length !== 1) {
+    problems.push(`${path} must route every metadata request through the reviewed fetch gate`);
+  }
+  if (!/method:\s*'GET'/u.test(text) || /method:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/iu.test(text)) {
+    problems.push(`${path} may issue only GET metadata requests`);
+  }
+  if (!/redirect:\s*'error'/u.test(text)) {
+    problems.push(`${path} must refuse HTTP redirects`);
+  }
+  const summaryWrites = [...text.matchAll(/\bappendFileSync\s*\(([^\n]+)/gu)];
+  if (
+    summaryWrites.length !== 1 ||
+    !summaryWrites[0][1].startsWith('process.env.GITHUB_STEP_SUMMARY, report.markdown,')
+  ) {
+    problems.push(`${path} may write only to the GitHub Actions job summary`);
   }
   return problems;
 }
@@ -714,7 +852,12 @@ export function collectPolicyProblems(repositoryRoot) {
   }
 
   const workflows = workflowFiles(root);
-  for (const required of ['ci.yml', 'codeql.yml', 'dependency-review.yml']) {
+  for (const required of [
+    'ci.yml',
+    'codeql.yml',
+    'dependency-review.yml',
+    'dependency-update-report.yml',
+  ]) {
     if (!workflows.some((path) => path.endsWith(`/${required}`))) {
       problems.push(`.github/workflows/${required} is missing`);
     }
@@ -727,12 +870,23 @@ export function collectPolicyProblems(repositoryRoot) {
     problems.push(...rootPermissionProblems(text, path));
     const requiredEvents = path.endsWith('/dependency-review.yml')
       ? ['pull_request', 'merge_group']
-      : ['push', 'pull_request', 'merge_group'];
+      : path.endsWith('/dependency-update-report.yml')
+        ? ['schedule', 'workflow_dispatch']
+        : ['push', 'pull_request', 'merge_group'];
     problems.push(...requiredWorkflowEventProblems(text, path, requiredEvents));
     if (/\b(?:docker\s+push|npm\s+publish|pnpm\s+publish|gh\s+release)\b/u.test(text)) {
       problems.push(`${path} contains a forbidden publish/push command`);
     }
   }
+
+  const dependencyUpdateWorkflow = read(
+    root,
+    '.github/workflows/dependency-update-report.yml',
+    problems
+  );
+  problems.push(...dependencyUpdateWorkflowProblems(dependencyUpdateWorkflow));
+  const dependencyUpdateScript = read(root, 'scripts/check-updates.mjs', problems);
+  problems.push(...dependencyUpdateScriptProblems(dependencyUpdateScript));
 
   const ci = read(root, '.github/workflows/ci.yml', problems);
   for (const fragment of [
@@ -764,9 +918,20 @@ export function collectPolicyProblems(repositoryRoot) {
     problems
   );
 
-  for (const path of ['OPERATIONS.md', 'docs/MAINTAINER-RELEASE-CHECKLIST.md', '.github/dependabot.yml']) {
+  for (const path of [
+    'CONTRIBUTING.md',
+    'SUPPORT.md',
+    'OPERATIONS.md',
+    'docs/MAINTAINER-RELEASE-CHECKLIST.md',
+    '.github/dependabot.yml',
+    '.github/ISSUE_TEMPLATE/config.yml',
+    '.github/pull_request_template.md',
+    'scripts/check-updates.mjs',
+  ]) {
     if (!existsSync(join(root, path))) problems.push(`${path} is missing`);
   }
+  const issueRouting = read(root, '.github/ISSUE_TEMPLATE/config.yml', problems);
+  problems.push(...issueRoutingProblems(issueRouting));
   const operations = read(root, 'OPERATIONS.md', problems);
   problems.push(...backupImportPolicyProblems(containerE2e, operations));
   const dependabot = read(root, '.github/dependabot.yml', problems);
