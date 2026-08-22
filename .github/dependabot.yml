@@ -1,7 +1,9 @@
 version: 2
 
-# Dependency version updates are coordinated in the Pro source-of-truth repository.
-# A zero limit keeps this public policy explicit without opening duplicate update PRs.
+# Dependency updates are reviewed manually and coordinated in the Pro source of truth.
+# Zero limits prevent routine version PRs. Keep Dependabot security updates disabled
+# in the repository settings. The read-only report provides weekly notification
+# without creating a branch, pull request or issue.
 updates:
   - package-ecosystem: npm
     directory: /collab-server

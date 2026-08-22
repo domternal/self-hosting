@@ -11,6 +11,8 @@ import {
   collectPolicyProblems,
   composePolicyProblems,
   dependabotVersionUpdateProblems,
+  dependencyUpdateScriptProblems,
+  dependencyUpdateWorkflowProblems,
   finalDockerStageUserProblems,
   requiredWorkflowEventProblems,
   rootPermissionProblems,
@@ -23,6 +25,14 @@ import {
 } from './container-project.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const dependencyUpdateWorkflow = readFileSync(
+  resolve(root, '.github/workflows/dependency-update-report.yml'),
+  'utf8'
+);
+const dependencyUpdateScript = readFileSync(
+  resolve(root, 'scripts/check-updates.mjs'),
+  'utf8'
+);
 
 test('the checked-in public template satisfies its infrastructure policy', () => {
   assert.deepEqual(collectPolicyProblems(root), []);
@@ -42,6 +52,68 @@ test('public Dependabot entries cannot reopen duplicate version update PRs', () 
       dependabot.replace(/\n\s*- package-ecosystem: docker[\s\S]*?(?=\n\s*- package-ecosystem: github-actions)/u, '')
     ).join('\n'),
     /exactly one docker update entry/u
+  );
+});
+
+test('dependency update reporting is scheduled, read-only and unable to create PRs', () => {
+  assert.deepEqual(dependencyUpdateWorkflowProblems(dependencyUpdateWorkflow), []);
+  assert.match(
+    dependencyUpdateWorkflowProblems(
+      dependencyUpdateWorkflow.replace('  workflow_dispatch: {}', '  workflow_dispatch: {}\n  pull_request: {}')
+    ).join('\n'),
+    /must not run on pull_request/u
+  );
+  assert.match(
+    dependencyUpdateWorkflowProblems(
+      dependencyUpdateWorkflow.replace('  contents: read', '  contents: write')
+    ).join('\n'),
+    /must not grant write permissions/u
+  );
+  assert.match(
+    dependencyUpdateWorkflowProblems(
+      dependencyUpdateWorkflow.replace(
+        '    runs-on: ubuntu-24.04',
+        '    permissions: write-all\n    runs-on: ubuntu-24.04'
+      )
+    ).join('\n'),
+    /must declare permissions only once|must not grant write-all/u
+  );
+  assert.match(
+    dependencyUpdateWorkflowProblems(
+      dependencyUpdateWorkflow.replace(
+        'run: node scripts/check-updates.mjs',
+        'run: gh pr create --title update'
+      )
+    ).join('\n'),
+    /must not create, publish or push anything/u
+  );
+});
+
+test('dependency update script remains GET-only and writes only its job summary', () => {
+  assert.deepEqual(dependencyUpdateScriptProblems(dependencyUpdateScript), []);
+  assert.match(
+    dependencyUpdateScriptProblems(
+      dependencyUpdateScript.replace("method: 'GET'", "method: 'POST'")
+    ).join('\n'),
+    /only GET/u
+  );
+  assert.match(
+    dependencyUpdateScriptProblems(
+      dependencyUpdateScript.replace(
+        "  'https:\/\/nodejs.org',",
+        "  'https:\/\/example.test',\n  'https:\/\/nodejs.org',"
+      )
+    ).join('\n'),
+    /origin allowlist/u
+  );
+  assert.match(
+    dependencyUpdateScriptProblems(
+      dependencyUpdateScript.replace(
+        'appendFileSync, readFileSync, readdirSync',
+        'appendFileSync, readFileSync, readdirSync, writeFileSync'
+      )
+    ).join('\n'),
+    /may only read repository files/u
   );
 });
 
