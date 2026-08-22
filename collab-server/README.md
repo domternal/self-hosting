@@ -58,7 +58,7 @@ the root [`OPERATIONS.md`](../OPERATIONS.md) runbook. If you copy only this
 service directory, copy and adapt that runbook too. A plain copy of a live
 SQLite main file is not a safe backup.
 
-For a token-free throwaway document server during evaluation there is also `npx --yes @hocuspocus/cli@4.4.0 --port 1234 --sqlite`; this server is the production-shaped one.
+For a token-free throwaway document server during evaluation there is also `npx --yes @hocuspocus/cli@4.6.0 --port 1234 --sqlite`; this server is the production-shaped one.
 
 ## Client side
 

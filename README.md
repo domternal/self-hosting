@@ -16,7 +16,7 @@ Each service directory carries its own setup README, so copying one into your pr
 For a throwaway document server during evaluation, skip this repository entirely:
 
 ```bash
-npx --yes @hocuspocus/cli@4.4.0 --port 1234 --sqlite
+npx --yes @hocuspocus/cli@4.6.0 --port 1234 --sqlite
 ```
 
 That is a generic relay: fine for trying the editor, not for production. It does not authenticate anyone, and it never reclaims deleted comment threads, so tombstones accumulate in the document forever. The server in this repository does both.

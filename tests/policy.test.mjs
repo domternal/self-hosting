@@ -10,6 +10,7 @@ import {
   checkoutCredentialProblems,
   collectPolicyProblems,
   composePolicyProblems,
+  dependabotVersionUpdateProblems,
   finalDockerStageUserProblems,
   requiredWorkflowEventProblems,
   rootPermissionProblems,
@@ -25,6 +26,23 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 test('the checked-in public template satisfies its infrastructure policy', () => {
   assert.deepEqual(collectPolicyProblems(root), []);
+});
+
+test('public Dependabot entries cannot reopen duplicate version update PRs', () => {
+  const dependabot = readFileSync(resolve(root, '.github/dependabot.yml'), 'utf8');
+  assert.deepEqual(dependabotVersionUpdateProblems(dependabot), []);
+  assert.match(
+    dependabotVersionUpdateProblems(
+      dependabot.replace('open-pull-requests-limit: 0', 'open-pull-requests-limit: 1')
+    ).join('\n'),
+    /npm version updates must keep open-pull-requests-limit at 0/u
+  );
+  assert.match(
+    dependabotVersionUpdateProblems(
+      dependabot.replace(/\n\s*- package-ecosystem: docker[\s\S]*?(?=\n\s*- package-ecosystem: github-actions)/u, '')
+    ).join('\n'),
+    /exactly one docker update entry/u
+  );
 });
 
 test('mutable GitHub Action tags are rejected', () => {
