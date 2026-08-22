@@ -65,7 +65,13 @@ export function readSecretSetting(env, name, { maxBytes = DEFAULT_MAX_BYTES } = 
     } catch {
       throw new Error(`${fileName} must contain valid UTF-8 text.`);
     }
-    value = value.replace(/(?:\r\n|\n|\r)+$/u, '');
+    let end = value.length;
+    while (end > 0) {
+      const code = value.charCodeAt(end - 1);
+      if (code !== 0x0a && code !== 0x0d) break;
+      end -= 1;
+    }
+    value = value.slice(0, end);
     validateSecretText(fileName, value, maxBytes);
     return value;
   } catch (error) {
