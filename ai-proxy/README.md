@@ -9,9 +9,9 @@ What it does:
 - **Streaming passthrough**: request bodies pass through untouched in whichever wire dialect the editor speaks (`openai-chat` or `anthropic-messages`), and the SSE reply streams back chunk by chunk with backpressure. Provider errors pass through with their status, so the editor's transport maps them for the UI.
 - **Limits**: a 1 MB request-body cap with a 20 s stall cutoff on the upload (so a caller who announces a body and goes silent cannot pin buffers), an upstream timeout (120 s default, `REQUEST_TIMEOUT_MS` overrides it: slow local models can need more), and an abort when the reader closes the tab, so nobody keeps provider tokens burning for a closed window.
 - **No content logging**: nothing here logs request or response bodies, because prompts carry your users' document text. Keep it that way in your edits, and log status codes and durations if you need observability.
-- **Production guards**: with `NODE_ENV=production` the proxy refuses to start with placeholder tokens, and refuses to start with no tokens at all unless `AI_ALLOW_UNAUTHENTICATED=1` says a gateway in front of it authenticates every request. An empty `AI_TOKENS` accepts every caller, which is exactly the state that flag opts into.
+- **Production guards**: with `NODE_ENV=production` the proxy refuses placeholder, non-header-safe or sub-32-byte caller tokens; a hosted provider without a key; and an HTTP hosted-provider upstream unless `UPSTREAM_ALLOW_INSECURE_HTTP=1` explicitly declares trusted private transport. It refuses no caller tokens unless `AI_ALLOW_UNAUTHENTICATED=1` says an authenticating gateway is in front. SIGINT/SIGTERM drains active requests, with a 25-second hard cap.
 
-What it deliberately does not do: rate limiting and usage quotas belong in your gateway or in the session check you plug in, where you know who the user is.
+What it deliberately does not do: aggregate connection limits, per-user rate limiting and usage quotas belong in your gateway or in the session check you plug in, where you know who the user is. The proxy caps each request, but those per-request bounds do not cap the memory or provider spend of many authorized requests at once.
 
 The static `AI_TOKENS` list gets you running, and it is the first thing to replace. It reaches the browser, so any user can read it out of the network panel and spend your provider budget from a script, and withdrawing it cuts off every user at once. A per-user session check in `authorizeRequest` fixes both, and it is what makes limits and quotas possible at all, since a limit has to know who is calling. The "Replace the token check" section below shows two ready swaps.
 
@@ -19,18 +19,34 @@ You may not need to deploy this as a service. The editor asks for one thing: a U
 
 ## Run
 
+Generate an independent caller token with `openssl rand -hex 32` and paste it
+into `AI_TOKENS`. Keep it separate from the provider API key.
+
 ```bash
 cp .env.example .env   # then set UPSTREAM_URL, PROVIDER, PROVIDER_API_KEY, AI_TOKENS
-node --env-file=.env index.mjs
+chmod 600 .env
+npm start
 ```
 
-Requires Node >= 22.9. There is nothing to install. The proxy binds to `127.0.0.1` by default, and `HOST` exposes it deliberately (the Docker setup does).
+Use Node 22.23.2. In this repository, `nvm use` at the root selects it; after
+copying only this directory, select 22.23.2 with your own version manager.
+There is nothing to install. The proxy binds to `127.0.0.1` by default, and
+`HOST` exposes it deliberately (the Docker setup does). `npm start` forces
+`NODE_ENV=production` after loading `.env`, so an inherited development setting
+cannot weaken the guards. Placeholder or weak credentials fail before the
+listener starts.
+
+For mounted secrets, set `PROVIDER_API_KEY_FILE` or `AI_TOKENS_FILE` instead of
+the matching direct variable; never set both. The root Compose file uses these
+file forms so secret values do not appear in the container environment. See the
+root [`OPERATIONS.md`](../OPERATIONS.md) for safe generation and rotation. If
+you copy only this service directory, copy and adapt that runbook too.
 
 Check it works before wiring the editor. The openai-chat dialect is shown, and the bearer value is one of your `AI_TOKENS`:
 
 ```bash
 curl -sN -X POST http://127.0.0.1:1250/ \
-  -H "authorization: Bearer change-me" \
+  -H "authorization: Bearer replace-with-one-of-your-ai-tokens" \
   -H "content-type: application/json" \
   -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Say hi"}]}'
 ```
@@ -100,7 +116,7 @@ Once a real check is in place, `AI_TOKENS` has no job left. This function is als
 Ollama, LM Studio and vLLM speak the OpenAI dialect and need no key:
 
 ```bash
-UPSTREAM_URL=http://127.0.0.1:11434/v1/chat/completions PROVIDER=none AI_TOKENS=dev-token node index.mjs
+NODE_ENV=development UPSTREAM_URL=http://127.0.0.1:11434/v1/chat/completions PROVIDER=none AI_TOKENS=dev-token node index.mjs
 ```
 
-Slow local models are the case where `REQUEST_TIMEOUT_MS` earns its keep, with one runtime limit to know about: Node's own `fetch` cuts a request whose response headers or next chunk take longer than 300 s (undici's defaults), no matter how high the setting goes, and the proxy warns at startup when the configured value crosses that line. The value still bounds the total once tokens flow; only fully silent gaps hit the runtime cap first. A fork that truly needs longer silence can pass a custom undici dispatcher via `createAiProxy({ dispatcher })`, with `headersTimeout` and `bodyTimeout` raised to match.
+Slow local models are the case where `REQUEST_TIMEOUT_MS` earns its keep. The reference accepts values up to `300000`, so every request still has a five-minute total ceiling. A fork that truly needs longer must raise the reviewed code limit and pass a custom undici dispatcher via `createAiProxy({ dispatcher })`, with `headersTimeout` and `bodyTimeout` raised to match.
