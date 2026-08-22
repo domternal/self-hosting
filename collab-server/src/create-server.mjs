@@ -5,6 +5,7 @@ import { Server } from '@hocuspocus/server';
 import { SQLite } from '@hocuspocus/extension-sqlite';
 import { collectThreadGarbage } from '@domternal-pro/extension-comments/yjs';
 import * as Y from 'yjs';
+import { documentNameError } from './document-name.mjs';
 import { createWebhookNotifier } from './webhook.mjs';
 
 // Matches DEFAULT_COLLAB_FIELD in @domternal-pro/extension-collaboration (the
@@ -21,6 +22,27 @@ const COMMENTS_MAP = 'comments';
 // flag lives here today; the editor never reads this map. Exported because
 // the REST API marks documents it provisions as owned (see rest.mjs).
 export const META_MAP = 'serverMeta';
+
+const DEFAULT_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_MAX_PAYLOAD_BYTES = 64 * 1024 * 1024;
+const BEARER_TOKEN = /^[A-Za-z0-9\-._~+/]+=*$/u;
+const MAX_BEARER_TOKEN_BYTES = 4_096;
+
+function validateTokenSet(value, name) {
+  if (!(value instanceof Set)) throw new TypeError(`createCollabServer: ${name} must be a Set.`);
+  for (const token of value) {
+    if (
+      typeof token !== 'string' ||
+      token === '' ||
+      Buffer.byteLength(token, 'utf8') > MAX_BEARER_TOKEN_BYTES ||
+      !BEARER_TOKEN.test(token)
+    ) {
+      throw new TypeError(
+        `createCollabServer: ${name} must contain only header-safe bearer tokens up to ${String(MAX_BEARER_TOKEN_BYTES)} bytes.`
+      );
+    }
+  }
+}
 
 /** @param {string} documentName */
 function isVersionSibling(documentName) {
@@ -42,6 +64,9 @@ function isVersionSibling(documentName) {
  *   signed lifecycle events (document.changed, client.connected,
  *   client.disconnected) to your endpoint; null disables it.
  * @param {boolean} [options.quiet] Suppress the Hocuspocus start banner.
+ * @param {(request: { token: string, documentName: string, mode: 'read' | 'write', surface: 'websocket' }) => boolean | Promise<boolean>} options.authorizeDocument
+ *   Shared per-document policy; only literal true authorizes.
+ * @param {number} [options.maxPayloadBytes] Maximum websocket frame size.
  * @param {((fragment: Y.XmlFragment, documentName: string) => void) | null} [options.seed]
  *   Fills brand-new documents; pass null to disable seeding.
  */
@@ -54,7 +79,23 @@ export function createCollabServer({
   webhook = null,
   quiet = false,
   seed = seedWelcome,
+  authorizeDocument,
+  maxPayloadBytes = DEFAULT_MAX_PAYLOAD_BYTES,
 }) {
+  validateTokenSet(tokens, 'tokens');
+  validateTokenSet(readOnlyTokens, 'readOnlyTokens');
+  if (typeof authorizeDocument !== 'function') {
+    throw new TypeError('createCollabServer: authorizeDocument must be a function.');
+  }
+  if (
+    !Number.isSafeInteger(maxPayloadBytes) ||
+    maxPayloadBytes < 1 ||
+    maxPayloadBytes > MAX_MAX_PAYLOAD_BYTES
+  ) {
+    throw new TypeError(
+      `createCollabServer: maxPayloadBytes must be a whole number from 1 to ${String(MAX_MAX_PAYLOAD_BYTES)}.`
+    );
+  }
   const notify = webhook ? createWebhookNotifier({ ...webhook, quiet }) : null;
 
   // Yjs updates applied to each live document since its last real store.
@@ -113,6 +154,11 @@ export function createCollabServer({
     port,
     address: host,
     quiet,
+    // A reusable factory must never install process-global signal handlers.
+    // The executable entry point coordinates websocket, REST and persistence
+    // shutdown together.
+    stopOnSignals: false,
+    websocketOptions: { maxPayload: maxPayloadBytes },
 
     // Runs once per connecting client, before any document data flows.
     // Throwing rejects the connection and the client's provider fires
@@ -121,6 +167,9 @@ export function createCollabServer({
     // (with tenant-scoped names such as "tenant-a/report-42" that is a
     // prefix comparison against the token's tenant).
     async onAuthenticate({ token, documentName, connectionConfig }) {
+      const invalidName = documentNameError(documentName);
+      if (invalidName !== null) throw new Error(invalidName);
+      let readOnly = false;
       if (readOnlyTokens.has(token)) {
         // Server-enforced viewer role. `editable: false` on the client is a
         // courtesy for the UI; THIS line is the enforcement for the
@@ -130,13 +179,21 @@ export function createCollabServer({
         // viewers should appear in presence; a hostile viewer could abuse
         // that channel, which the client presence UI caps and sanitizes.
         connectionConfig.readOnly = true;
-        return { token, readOnly: true };
-      }
-      if (!tokens.has(token)) {
+        readOnly = true;
+      } else if (!tokens.has(token)) {
         throw new Error(`Invalid authentication token for "${documentName}"`);
       }
-      // The return value becomes `context` in every later hook.
-      return { token };
+      const authorized = await authorizeDocument({
+        token,
+        documentName,
+        mode: readOnly ? 'read' : 'write',
+        surface: 'websocket',
+      });
+      if (authorized !== true) {
+        throw new Error(`Not authorized for document "${documentName}"`);
+      }
+      // Never retain the raw bearer token in long-lived hook context.
+      return { readOnly };
     },
 
     // Runs after the SQLite extension restored any stored state, so the
@@ -232,9 +289,10 @@ export function createCollabServer({
       notify?.('document.changed', { documentName });
     },
 
-    // NEVER forward `context` here: it holds the client's bearer token (the
-    // onAuthenticate return value), and a webhook body is exactly the kind
-    // of payload that ends up in third-party logs. Ship derived facts only.
+    // NEVER forward `context` here: authentication deliberately keeps the
+    // bearer token out of it, but integrations may add other private values
+    // over time. A webhook body ends up in third-party logs, so ship only the
+    // explicitly derived facts below.
     //
     // REST connections are skipped in both: there is no client, and reporting
     // one would put phantom sessions (with a meaningless readOnly flag) into

@@ -2,6 +2,22 @@
 // Entrypoint: configuration comes from the environment so the same code runs
 // locally, in Docker, or behind a process manager. See .env.example.
 import { createAiProxy } from './src/create-proxy.mjs';
+import { readSecretSetting } from './src/secret-setting.mjs';
+
+const MAX_REQUEST_TIMEOUT_MS = 300_000;
+const MAX_BEARER_TOKEN_BYTES = 4_096;
+const MAX_PROVIDER_KEY_BYTES = 4_096;
+const MIN_PRODUCTION_SECRET_BYTES = 32;
+const BEARER_TOKEN = /^[A-Za-z0-9\-._~+/]+=*$/u;
+const SHUTDOWN_GRACE_MS = 25_000;
+
+function hasAsciiControl(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
 
 /**
  * Ports must fail loudly, same as in the collaboration server. A NaN
@@ -14,6 +30,10 @@ import { createAiProxy } from './src/create-proxy.mjs';
  */
 function portOf(raw, fallback, name) {
   if (raw === undefined || raw === '') return fallback;
+  if (hasAsciiControl(raw) || Buffer.byteLength(raw, 'utf8') > 32) {
+    console.error(`${name} is not a valid port setting.`);
+    process.exit(1);
+  }
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 0 || value > 65535) {
     console.error(`${name}="${raw}" is not a port number (0-65535).`);
@@ -22,10 +42,65 @@ function portOf(raw, fallback, name) {
   return value;
 }
 
+function hostSetting(raw) {
+  const value = raw ?? '127.0.0.1';
+  if (value === '' || hasAsciiControl(value) || Buffer.byteLength(value, 'utf8') > 1_024) {
+    console.error('HOST is not a valid configuration value.');
+    process.exit(1);
+  }
+  return value;
+}
+
 const port = portOf(process.env.PORT, 1250, 'PORT');
-const upstreamUrl = process.env.UPSTREAM_URL ?? '';
 const provider = process.env.PROVIDER ?? 'openai';
-const apiKey = process.env.PROVIDER_API_KEY ?? '';
+
+function secretSetting(name) {
+  try {
+    return readSecretSetting(process.env, name);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : `Could not read ${name}.`);
+    process.exit(1);
+  }
+}
+
+function httpEndpoint(raw, name) {
+  if (raw === '') {
+    console.error(
+      'Set UPSTREAM_URL to the provider endpoint, e.g. https://api.openai.com/v1/chat/completions'
+    );
+    process.exit(1);
+  }
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    console.error(`${name} must be a valid HTTP(S) URL.`);
+    process.exit(1);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    console.error(`${name} must use http: or https:.`);
+    process.exit(1);
+  }
+  if (url.username !== '' || url.password !== '') {
+    console.error(`${name} must not contain URL credentials; use the dedicated key setting.`);
+    process.exit(1);
+  }
+  if (url.hash !== '') {
+    console.error(`${name} must not contain a URL fragment.`);
+    process.exit(1);
+  }
+  return url;
+}
+
+const upstream = httpEndpoint(process.env.UPSTREAM_URL ?? '', 'UPSTREAM_URL');
+const upstreamUrl = upstream.href;
+const apiKey = secretSetting('PROVIDER_API_KEY');
+if (Buffer.byteLength(apiKey, 'utf8') > MAX_PROVIDER_KEY_BYTES || hasAsciiControl(apiKey)) {
+  console.error(
+    `PROVIDER_API_KEY must be header-safe text up to ${String(MAX_PROVIDER_KEY_BYTES)} bytes; its value is never logged.`
+  );
+  process.exit(1);
+}
 
 /** @param {string | undefined} raw */
 function tokenSet(raw) {
@@ -37,17 +112,47 @@ function tokenSet(raw) {
   );
 }
 
-const tokens = tokenSet(process.env.AI_TOKENS);
-const allowedOrigins = tokenSet(process.env.ALLOWED_ORIGINS);
-
-if (upstreamUrl === '') {
+const tokens = tokenSet(secretSetting('AI_TOKENS'));
+if (
+  [...tokens].some(
+    (token) =>
+      Buffer.byteLength(token, 'utf8') > MAX_BEARER_TOKEN_BYTES || !BEARER_TOKEN.test(token)
+  )
+) {
   console.error(
-    'Set UPSTREAM_URL to the provider endpoint, e.g. https://api.openai.com/v1/chat/completions'
+    `AI_TOKENS must contain only header-safe bearer tokens up to ${String(MAX_BEARER_TOKEN_BYTES)} bytes each; token values are never logged.`
   );
   process.exit(1);
 }
+const allowedOrigins = tokenSet(process.env.ALLOWED_ORIGINS);
+for (const origin of allowedOrigins) {
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    console.error('Every ALLOWED_ORIGINS entry must be a canonical HTTP(S) origin.');
+    process.exit(1);
+  }
+  if (
+    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.origin !== origin
+  ) {
+    console.error('Every ALLOWED_ORIGINS entry must be a canonical HTTP(S) origin.');
+    process.exit(1);
+  }
+}
+
 if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'none') {
   console.error(`PROVIDER must be openai, anthropic or none, got "${provider}".`);
+  process.exit(1);
+}
+const production = process.env.NODE_ENV === 'production';
+if (apiKey === '' && provider !== 'none' && production) {
+  console.error(
+    'Refusing to start a hosted provider without PROVIDER_API_KEY in production. Set the key or use PROVIDER=none for a local model.'
+  );
   process.exit(1);
 }
 if (apiKey === '' && provider !== 'none') {
@@ -55,8 +160,17 @@ if (apiKey === '' && provider !== 'none') {
     '[ai-proxy] PROVIDER_API_KEY is empty: fine only for local models; hosted providers will reject the forwarded requests.'
   );
 }
-
-const production = process.env.NODE_ENV === 'production';
+if (upstream.protocol === 'http:') {
+  if (production && provider !== 'none' && process.env.UPSTREAM_ALLOW_INSECURE_HTTP !== '1') {
+    console.error(
+      'Refusing an HTTP UPSTREAM_URL for a hosted provider in production because the API key and prompts would travel unencrypted. Use HTTPS, or set UPSTREAM_ALLOW_INSECURE_HTTP=1 only for a trusted private transport.'
+    );
+    process.exit(1);
+  }
+  console.warn(
+    '[ai-proxy] UPSTREAM_URL uses unencrypted HTTP. This is suitable only for a local model or explicitly trusted private transport.'
+  );
+}
 
 // An unauthenticated proxy is an open relay burning YOUR provider budget
 // for whoever finds the URL. Locally that is a warning; in production it
@@ -89,11 +203,22 @@ if (placeholdersInUse.length > 0) {
     `[ai-proxy] Placeholder tokens in use (${placeholdersInUse.join(', ')}): fine locally, refused when NODE_ENV=production.`
   );
 }
+if ([...tokens].some((token) => Buffer.byteLength(token, 'utf8') < MIN_PRODUCTION_SECRET_BYTES)) {
+  if (production) {
+    console.error(
+      `Refusing AI_TOKENS shorter than ${String(MIN_PRODUCTION_SECRET_BYTES)} UTF-8 bytes in production. Generate random caller tokens; their values are never logged.`
+    );
+    process.exit(1);
+  }
+  console.warn(
+    `[ai-proxy] AI_TOKENS contains values shorter than ${String(MIN_PRODUCTION_SECRET_BYTES)} bytes: fine only for local development.`
+  );
+}
 
 // Node binds ALL interfaces when no host is given, so the host is always
 // passed: loopback by default, wider only when HOST says so deliberately
 // (Docker needs 0.0.0.0 for the port mapping to reach the process).
-const host = process.env.HOST ?? '127.0.0.1';
+const host = hostSetting(process.env.HOST);
 if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
   console.warn(
     `[ai-proxy] Binding ${host}: make sure the proxy is reachable only from networks you trust.`
@@ -102,25 +227,17 @@ if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
 
 // Total upstream cutoff per request. The default is generous for hosted
 // providers; slow local models can need more than the 120 s default.
-const timeoutSet = (process.env.REQUEST_TIMEOUT_MS ?? '') !== '';
-const timeoutRaw = Number(process.env.REQUEST_TIMEOUT_MS ?? '');
-const timeoutValid = Number.isFinite(timeoutRaw) && timeoutRaw > 0;
-if (timeoutSet && !timeoutValid) {
-  // Every other misconfiguration in this file is loud; a silently ignored
-  // timeout would look like it applied until a long generation got cut.
-  console.warn(
-    `[ai-proxy] REQUEST_TIMEOUT_MS="${process.env.REQUEST_TIMEOUT_MS}" is not a positive number: using the 120000 ms default.`
+const timeoutSetting = process.env.REQUEST_TIMEOUT_MS ?? '';
+const requestTimeoutMs = timeoutSetting === '' ? 120_000 : Number(timeoutSetting);
+if (
+  !Number.isSafeInteger(requestTimeoutMs) ||
+  requestTimeoutMs < 1 ||
+  requestTimeoutMs > MAX_REQUEST_TIMEOUT_MS
+) {
+  console.error(
+    `REQUEST_TIMEOUT_MS must be a whole number from 1 to ${String(MAX_REQUEST_TIMEOUT_MS)}.`
   );
-}
-const requestTimeoutMs = timeoutValid ? timeoutRaw : 120_000;
-if (requestTimeoutMs > 300_000) {
-  // Node's fetch (undici) cuts a request whose response headers or next
-  // body chunk take longer than 300 s, regardless of this setting. The
-  // value still bounds the total once data flows; only fully silent gaps
-  // hit the runtime's own cap first.
-  console.warn(
-    `[ai-proxy] REQUEST_TIMEOUT_MS=${String(requestTimeoutMs)} exceeds Node's own 300 s silence cap: a stream that stays completely silent for longer than 300 s is still cut by the runtime. Pass a custom undici dispatcher to createAiProxy to raise that (see the readme).`
-  );
+  process.exit(1);
 }
 
 const server = createAiProxy({
@@ -148,5 +265,48 @@ server.on('error', (error) => {
   process.exit(1);
 });
 server.listen(port, host, () => {
-  console.log(`AI proxy listening on http://${host}:${String(port)} -> ${upstreamUrl}`);
+  // Query strings often carry gateway credentials. The configured endpoint
+  // is used in full, but startup logs name only its origin.
+  console.log(`AI proxy listening on http://${host}:${String(port)} -> ${upstream.origin}`);
 });
+
+let shutdownPromise = null;
+function shutdown(signal) {
+  if (shutdownPromise !== null) return shutdownPromise;
+  shutdownPromise = new Promise((resolve) => {
+    console.log(`[ai-proxy] ${signal} received; draining active requests.`);
+    const forced = setTimeout(() => {
+      console.error(
+        `[ai-proxy] Graceful shutdown exceeded ${String(SHUTDOWN_GRACE_MS)} ms; forcing active connections closed.`
+      );
+      server.closeAllConnections();
+      process.exit(1);
+    }, SHUTDOWN_GRACE_MS);
+    if (!server.listening) {
+      clearTimeout(forced);
+      resolve();
+      process.exit(0);
+      return;
+    }
+    server.close((error) => {
+      clearTimeout(forced);
+      if (error) {
+        console.error('[ai-proxy] Graceful shutdown failed:', error.message);
+        resolve();
+        process.exit(1);
+        return;
+      }
+      console.log('[ai-proxy] Graceful shutdown complete.');
+      resolve();
+      process.exit(0);
+    });
+    server.closeIdleConnections();
+  });
+  return shutdownPromise;
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    void shutdown(signal);
+  });
+}

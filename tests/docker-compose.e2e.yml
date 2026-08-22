@@ -1,0 +1,79 @@
+services:
+  collab-server:
+    image: ${COLLAB_IMAGE_REF:-domternal-self-hosting-collab-e2e:local}
+    pull_policy: never
+    depends_on:
+      mock-webhook:
+        condition: service_healthy
+
+  ai-proxy:
+    image: ${AI_IMAGE_REF:-domternal-self-hosting-ai-e2e:local}
+    pull_policy: never
+    environment:
+      UPSTREAM_URL: http://mock-provider:1260/v1/chat/completions
+      UPSTREAM_ALLOW_INSECURE_HTTP: '1'
+      PROVIDER: openai
+      ALLOWED_ORIGINS: https://app.example.test
+      REQUEST_TIMEOUT_MS: '5000'
+    depends_on:
+      mock-provider:
+        condition: service_healthy
+
+  mock-provider:
+    image: ${MOCK_IMAGE_REF:-domternal-self-hosting-mock-e2e:local}
+    pull_policy: never
+    build:
+      context: ./tests/mock-provider
+      pull: true
+    restart: 'no'
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16777216
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    networks:
+      - ai-network
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:1260/health',{signal:AbortSignal.timeout(1000)}).then((r)=>process.exit(r.status===200?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: '1'
+        compress: 'false'
+
+  mock-webhook:
+    image: ${MOCK_IMAGE_REF:-domternal-self-hosting-mock-e2e:local}
+    pull_policy: never
+    restart: 'no'
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16777216
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    networks:
+      - collab-network
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:1260/health',{signal:AbortSignal.timeout(1000)}).then((r)=>process.exit(r.status===200?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: '1'
+        compress: 'false'

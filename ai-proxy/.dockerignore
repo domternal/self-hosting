@@ -1,4 +1,10 @@
-# Keep local runs out of the build context: node_modules is reinstalled in
-# the image, and .env holds secrets that must never travel to the builder.
-node_modules
-.env
+# Default-deny: only the zero-dependency runtime enters the Docker context.
+# Local secrets, tests, Git history and future unrelated files stay outside.
+**
+!Dockerfile
+!LICENSE
+!package.json
+!index.mjs
+!src/
+!src/create-proxy.mjs
+!src/secret-setting.mjs

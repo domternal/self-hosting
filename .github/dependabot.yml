@@ -1,0 +1,51 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /collab-server
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:15'
+      timezone: Europe/Zagreb
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    groups:
+      production-dependencies:
+        dependency-type: production
+        patterns:
+          - '*'
+
+  - package-ecosystem: docker
+    # One dependency-name group keeps the identical Node tag/digest atomic
+    # across production and E2E Dockerfiles, so policy never sees a half-bump.
+    directories:
+      - /collab-server
+      - /ai-proxy
+      - /tests/mock-provider
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:25'
+      timezone: Europe/Zagreb
+    open-pull-requests-limit: 3
+    groups:
+      shared-node-runtime:
+        group-by: dependency-name
+    ignore:
+      - dependency-name: node
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:35'
+      timezone: Europe/Zagreb
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - '*'

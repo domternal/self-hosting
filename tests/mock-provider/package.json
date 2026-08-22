@@ -1,0 +1,10 @@
+{
+  "name": "domternal-self-hosting-mock-provider",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.23.2 <23"
+  }
+}

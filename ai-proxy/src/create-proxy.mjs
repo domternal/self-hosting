@@ -24,6 +24,22 @@ const BODY_LIMIT_BYTES = 1024 * 1024;
 // that announce a body and then stall, pinning one buffer each until Node's
 // 300 s default reaps them. Uploading a prompt takes well under this.
 const BODY_IDLE_MS = 20_000;
+const MAX_REQUEST_TIMEOUT_MS = 300_000;
+const MAX_BEARER_TOKEN_BYTES = 4_096;
+const MAX_PROVIDER_KEY_BYTES = 4_096;
+const BEARER_TOKEN = /^[A-Za-z0-9\-._~+/]+=*$/u;
+const SECURITY_HEADERS = {
+  'cache-control': 'no-store',
+  'x-content-type-options': 'nosniff',
+};
+
+function hasAsciiControl(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
 
 /**
  * Auth header shape per provider family. 'none' is for local models
@@ -58,6 +74,31 @@ function authorizeRequest(token, tokens) {
   return tokens.has(token);
 }
 
+function validateTokenSet(tokens) {
+  if (!(tokens instanceof Set)) throw new TypeError('createAiProxy: tokens must be a Set.');
+  for (const token of tokens) {
+    if (
+      typeof token !== 'string' ||
+      token === '' ||
+      Buffer.byteLength(token, 'utf8') > MAX_BEARER_TOKEN_BYTES ||
+      !BEARER_TOKEN.test(token)
+    ) {
+      throw new TypeError(
+        `createAiProxy: tokens must contain only header-safe bearer tokens up to ${String(MAX_BEARER_TOKEN_BYTES)} bytes.`
+      );
+    }
+  }
+}
+
+function bearerToken(req) {
+  const distinct = req.headersDistinct?.authorization;
+  if (distinct !== undefined && distinct.length !== 1) return null;
+  const header = distinct?.[0] ?? req.headers.authorization;
+  if (typeof header !== 'string') return null;
+  const match = /^Bearer ([A-Za-z0-9\-._~+/]+=*)$/iu.exec(header);
+  return match?.[1] ?? null;
+}
+
 /**
  * @param {object} options
  * @param {string} options.upstreamUrl Full provider or gateway endpoint,
@@ -72,10 +113,8 @@ function authorizeRequest(token, tokens) {
  * @param {number} [options.requestTimeoutMs] Upstream cutoff. Default 120s,
  *   generous because reasoning models stream slowly at the start.
  * @param {object} [options.dispatcher] Custom undici dispatcher for the
- *   upstream fetch. Node's own fetch cuts a request whose headers or next
- *   body chunk take longer than 300 s (undici's defaults) no matter what
- *   requestTimeoutMs says; a fork that truly needs longer silent gaps
- *   passes a dispatcher whose headersTimeout/bodyTimeout allow them.
+ *   upstream fetch. The reference keeps a 300 s total cutoff; a fork that
+ *   raises it must also raise the dispatcher's headers and body timeouts.
  */
 export function createAiProxy({
   upstreamUrl,
@@ -86,6 +125,66 @@ export function createAiProxy({
   requestTimeoutMs = 120_000,
   dispatcher,
 }) {
+  let endpoint;
+  try {
+    endpoint = new URL(upstreamUrl);
+  } catch {
+    throw new TypeError('createAiProxy: upstreamUrl must be a valid HTTP(S) URL.');
+  }
+  if (
+    (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') ||
+    endpoint.username !== '' ||
+    endpoint.password !== '' ||
+    endpoint.hash !== ''
+  ) {
+    throw new TypeError(
+      'createAiProxy: upstreamUrl must be an HTTP(S) URL without credentials or a fragment.'
+    );
+  }
+  if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'none') {
+    throw new TypeError('createAiProxy: provider must be openai, anthropic or none.');
+  }
+  validateTokenSet(tokens);
+  if (
+    typeof apiKey !== 'string' ||
+    Buffer.byteLength(apiKey, 'utf8') > MAX_PROVIDER_KEY_BYTES ||
+    hasAsciiControl(apiKey)
+  ) {
+    throw new TypeError(
+      `createAiProxy: apiKey must be header-safe text up to ${String(MAX_PROVIDER_KEY_BYTES)} bytes.`
+    );
+  }
+  if (!(allowedOrigins instanceof Set)) {
+    throw new TypeError('createAiProxy: allowedOrigins must be a Set.');
+  }
+  for (const origin of allowedOrigins) {
+    if (typeof origin !== 'string') {
+      throw new TypeError('createAiProxy: allowedOrigins must contain canonical HTTP(S) origins.');
+    }
+    let parsed;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new TypeError('createAiProxy: allowedOrigins must contain canonical HTTP(S) origins.');
+    }
+    if (
+      (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+      parsed.username !== '' ||
+      parsed.password !== '' ||
+      parsed.origin !== origin
+    ) {
+      throw new TypeError('createAiProxy: allowedOrigins must contain canonical HTTP(S) origins.');
+    }
+  }
+  if (
+    !Number.isSafeInteger(requestTimeoutMs) ||
+    requestTimeoutMs < 1 ||
+    requestTimeoutMs > MAX_REQUEST_TIMEOUT_MS
+  ) {
+    throw new TypeError(
+      `createAiProxy: requestTimeoutMs must be a whole number from 1 to ${String(MAX_REQUEST_TIMEOUT_MS)}.`
+    );
+  }
   if (dispatcher !== undefined && typeof dispatcher?.dispatch !== 'function') {
     // A node:http Agent reads like a synonym and is the realistic mistake;
     // passed through it would fail every request with a silent 502 instead
@@ -111,7 +210,11 @@ export function createAiProxy({
   /** @param {import('node:http').ServerResponse} res */
   function json(res, status, extraHeaders, body) {
     if (res.destroyed || res.writableEnded || res.headersSent) return;
-    res.writeHead(status, { 'content-type': 'application/json', ...extraHeaders });
+    res.writeHead(status, {
+      'content-type': 'application/json',
+      ...extraHeaders,
+      ...SECURITY_HEADERS,
+    });
     res.end(JSON.stringify(body));
   }
 
@@ -120,24 +223,33 @@ export function createAiProxy({
     return new Promise((resolve, reject) => {
       const chunks = [];
       let received = 0;
+      let finished = false;
       // Reaps a caller who announces a body and then goes quiet, so pinned
       // buffers are bounded by how fast a client uploads rather than by how
       // many connections it is willing to open.
       /** @type {ReturnType<typeof setTimeout>} */
       let idle;
+      const settle = () => {
+        clearTimeout(idle);
+      };
+      const fail = (error) => {
+        if (finished) return;
+        finished = true;
+        settle();
+        req.destroy(error);
+        reject(error);
+      };
       const arm = () => {
         idle = setTimeout(() => {
           const error = new Error('Request body stalled');
           error.statusCode = 408;
-          req.destroy(error);
-          reject(error);
+          fail(error);
         }, BODY_IDLE_MS);
-      };
-      const settle = () => {
-        clearTimeout(idle);
+        idle.unref();
       };
       arm();
       req.on('data', (chunk) => {
+        if (finished) return;
         settle();
         arm();
         received += chunk.length;
@@ -148,21 +260,29 @@ export function createAiProxy({
           // thing the limit exists to refuse.
           const error = new Error('Request body too large');
           error.statusCode = 413;
-          req.destroy(error);
-          reject(error);
+          fail(error);
           return;
         }
         chunks.push(chunk);
       });
       req.on('end', () => {
+        if (finished) return;
+        finished = true;
         settle();
         resolve(Buffer.concat(chunks));
       });
       req.on('error', (error) => {
+        if (finished) return;
+        finished = true;
         settle();
         reject(error);
       });
-      req.on('close', settle);
+      req.on('close', () => {
+        if (finished) return;
+        finished = true;
+        settle();
+        reject(new Error('Request body closed before completion'));
+      });
     });
   }
 
@@ -180,6 +300,7 @@ export function createAiProxy({
           'access-control-allow-methods': 'POST',
           'access-control-allow-headers': 'authorization, content-type',
           'access-control-max-age': '86400',
+          ...SECURITY_HEADERS,
         });
         res.end();
         return;
@@ -190,10 +311,15 @@ export function createAiProxy({
         return;
       }
 
-      const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-      if (!(await authorizeRequest(token, tokens))) {
+      const token = bearerToken(req);
+      if (tokens.size > 0 && (token === null || !(await authorizeRequest(token, tokens)))) {
         // RFC 6750 requires WWW-Authenticate alongside a bearer 401.
-        json(res, 401, { ...cors, 'www-authenticate': 'Bearer' }, { error: 'Missing or invalid bearer token' });
+        json(
+          res,
+          401,
+          { ...cors, 'www-authenticate': 'Bearer' },
+          { error: 'Missing or invalid bearer token' }
+        );
         return;
       }
 
@@ -210,7 +336,7 @@ export function createAiProxy({
 
       let upstream;
       try {
-        upstream = await fetch(upstreamUrl, {
+        upstream = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -241,7 +367,10 @@ export function createAiProxy({
         // never content, per the logging policy above. Aborts are the
         // caller's own doing and the timeout already answers 504.
         if (!controller.signal.aborted) {
-          console.error('[ai-proxy] upstream fetch failed:', error?.cause?.message ?? error?.message);
+          console.error(
+            '[ai-proxy] upstream fetch failed:',
+            error?.cause?.message ?? error?.message
+          );
         }
         json(res, timedOut ? 504 : 502, cors, {
           error: timedOut
@@ -261,7 +390,7 @@ export function createAiProxy({
       res.writeHead(upstream.status, {
         ...cors,
         'content-type': upstream.headers.get('content-type') ?? 'application/json',
-        'cache-control': 'no-store',
+        ...SECURITY_HEADERS,
         ...(retryAfter === null ? {} : { 'retry-after': retryAfter }),
       });
 
@@ -293,7 +422,11 @@ export function createAiProxy({
       const tagged = typeof error?.statusCode === 'number';
       const status = tagged ? error.statusCode : 500;
       if (!res.headersSent && !res.destroyed) {
-        res.writeHead(status, { 'content-type': 'application/json', ...cors });
+        res.writeHead(status, {
+          'content-type': 'application/json',
+          ...cors,
+          ...SECURITY_HEADERS,
+        });
         // Only errors minted in this file carry a statusCode; anything else
         // (say a replaced authorizeRequest that throws) must not leak its
         // internals to an unauthenticated caller.
