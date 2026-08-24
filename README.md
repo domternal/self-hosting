@@ -207,8 +207,9 @@ budget.
 ## Support, contributions and license
 
 This repository is MIT licensed and provided as is: it is a starting point you
-own and adapt, not a managed product. The `@domternal-pro` packages it installs
-remain under the [Domternal Pro commercial license](https://domternal.dev/license/),
+may copy and adapt under that license, not a managed product. The
+`@domternal-pro` packages it installs remain under the
+[Domternal Pro commercial license](https://domternal.dev/license/),
 and running them in production needs a license key. See [SUPPORT.md](./SUPPORT.md)
 for help and defect reporting, [CONTRIBUTING.md](./CONTRIBUTING.md) before
 proposing a change, and [SECURITY.md](./SECURITY.md) for private vulnerability
