@@ -148,7 +148,11 @@ if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'none') {
   console.error(`PROVIDER must be openai, anthropic or none, got "${provider}".`);
   process.exit(1);
 }
-const production = process.env.NODE_ENV === 'production';
+// Anything but an explicit development setting counts as production: systemd,
+// pm2 and a bare Kubernetes Deployment set no NODE_ENV, and reading that as
+// local would downgrade every refusal below to a warning on exactly the hosts
+// that need them.
+const production = process.env.NODE_ENV !== 'development';
 if (apiKey === '' && provider !== 'none' && production) {
   console.error(
     'Refusing to start a hosted provider without PROVIDER_API_KEY in production. Set the key or use PROVIDER=none for a local model.'
@@ -174,12 +178,12 @@ if (upstream.protocol === 'http:') {
 
 // An unauthenticated proxy is an open relay burning YOUR provider budget
 // for whoever finds the URL. Locally that is a warning; in production it
-// refuses to start unless you explicitly accept it because authentication
-// happens in a gateway in front of this process.
+// refuses to start unless you explicitly accept it because a gateway or a
+// replaced authorizeRequest authenticates every request.
 if (tokens.size === 0) {
   if (production && process.env.AI_ALLOW_UNAUTHENTICATED !== '1') {
     console.error(
-      'Refusing to start without AI_TOKENS in production. Set caller tokens, or set AI_ALLOW_UNAUTHENTICATED=1 only when a gateway in front of this process authenticates every request.'
+      'Refusing to start without AI_TOKENS in production. Set caller tokens, or set AI_ALLOW_UNAUTHENTICATED=1 only when a gateway in front of this process, or a replaced authorizeRequest, authenticates every request.'
     );
     process.exit(1);
   }
@@ -200,7 +204,7 @@ if (placeholdersInUse.length > 0) {
     process.exit(1);
   }
   console.warn(
-    `[ai-proxy] Placeholder tokens in use (${placeholdersInUse.join(', ')}): fine locally, refused when NODE_ENV=production.`
+    `[ai-proxy] Placeholder tokens in use (${placeholdersInUse.join(', ')}): fine locally, refused unless NODE_ENV=development.`
   );
 }
 if ([...tokens].some((token) => Buffer.byteLength(token, 'utf8') < MIN_PRODUCTION_SECRET_BYTES)) {

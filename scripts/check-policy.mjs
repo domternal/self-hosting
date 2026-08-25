@@ -259,6 +259,157 @@ export function requiredWorkflowEventProblems(
   return problems;
 }
 
+function workflowJobBlock(text, job) {
+  const lines = text.split(/\r?\n/u);
+  const start = lines.findIndex((line) => line === `  ${job}:`);
+  if (start === -1) return '';
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^  [A-Za-z0-9_-]+:\s*$/u.test(lines[index]) || /^\S/u.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start, end).join('\n');
+}
+
+function workflowStepBlock(jobText, id) {
+  const lines = jobText.split(/\r?\n/u);
+  const idLine = lines.findIndex((line) => line === `        id: ${id}`);
+  if (idLine === -1) return '';
+  let start = idLine;
+  while (start >= 0 && !/^      -\s+\S/u.test(lines[start])) start -= 1;
+  if (start === -1) return '';
+  let end = lines.length;
+  for (let index = idLine + 1; index < lines.length; index += 1) {
+    if (/^      -\s+\S/u.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start, end).join('\n');
+}
+
+export function deploymentLockWorkflowProblems(
+  text,
+  path = '.github/workflows/ci.yml'
+) {
+  const problems = [];
+  const staticPolicy = workflowJobBlock(text, 'static-policy');
+  const dependencyLock = workflowJobBlock(text, 'dependency-lock');
+  const containers = workflowJobBlock(text, 'containers');
+  if (staticPolicy === '') problems.push(`${path} is missing the static-policy job`);
+  if (dependencyLock === '') problems.push(`${path} is missing the dependency-lock job`);
+  if (containers === '') problems.push(`${path} is missing the containers job`);
+  if (problems.length > 0) return problems;
+
+  for (const fragment of [
+    '      deployment-lock: ${{ steps.deployment-lock.outputs.present }}',
+    '          fetch-depth: 0',
+    'uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
+    '          node-version: 22.23.2',
+    '          package-manager-cache: false',
+  ]) {
+    requireText(staticPolicy, fragment, path, problems);
+  }
+  const nodeSetup = staticPolicy.indexOf('          node-version: 22.23.2');
+  const gateStep = staticPolicy.indexOf('        id: deployment-lock');
+  if (nodeSetup === -1 || gateStep === -1 || nodeSetup > gateStep) {
+    problems.push(`${path} static-policy must select the supported Node release before the deployment-lock gate`);
+  }
+  for (const [jobName, jobText] of [
+    ['static-policy', staticPolicy],
+    ['dependency-lock', dependencyLock],
+    ['containers', containers],
+  ]) {
+    if (/^\s+continue-on-error:/mu.test(jobText)) {
+      problems.push(`${path} ${jobName} must not ignore any job or step failure`);
+    }
+  }
+
+  const gate = workflowStepBlock(staticPolicy, 'deployment-lock');
+  if (gate === '') {
+    problems.push(`${path} is missing the deployment-lock reporting step`);
+  } else {
+    const gateRun = gate.match(/^\s+run:\s*\|\s*\n([\s\S]*)$/mu)?.[1] ?? '';
+    for (const fragment of [
+      "BEFORE_SHA: ${{ github.event.before || '' }}",
+      "DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}",
+      'EVENT_NAME: ${{ github.event_name }}',
+      'set -euo pipefail',
+      'lock_path=collab-server/package-lock.json',
+      'if [ -f "$lock_path" ]; then',
+      `printf 'present=true\\n' >> "$GITHUB_OUTPUT"`,
+      'default_ref="refs/remotes/origin/$DEFAULT_BRANCH"',
+      [
+        'git fetch --force --no-tags origin \\',
+        '            "+refs/heads/$DEFAULT_BRANCH:$default_ref"',
+      ].join('\n'),
+      'history_refs=("$default_ref")',
+      'if [ "$EVENT_NAME" = push ]; then',
+      '[[ ! "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]',
+      'if [ "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]; then',
+      'git fetch --force --no-tags origin "$BEFORE_SHA"',
+      'history_refs+=(FETCH_HEAD)',
+      'for history_ref in "${history_refs[@]}"; do',
+      'git log -1 --format=%H "$history_ref" -- "$lock_path"',
+      'if [ -n "$previous_lock_commit" ]; then',
+      'node scripts/require-lockfile.mjs --verify-unpublished-transition',
+      `printf 'present=false\\n' >> "$GITHUB_OUTPUT"`,
+    ]) {
+      requireText(gate, fragment, path, problems);
+    }
+    requireText(
+      gate,
+      [
+        '          if [ -f "$lock_path" ]; then',
+        `            printf 'present=true\\n' >> "$GITHUB_OUTPUT"`,
+        '            exit 0',
+        '          fi',
+      ].join('\n'),
+      path,
+      problems
+    );
+    if (count(gateRun, 'exit 0') !== 1) {
+      problems.push(`${path} deployment-lock gate must exit successfully only in the lock-present branch`);
+    }
+    if (count(gate, 'exit 1') !== 2) {
+      problems.push(`${path} deployment-lock gate must fail both invalid push metadata and prior-lock history`);
+    }
+    if (
+      /^\s+(?:continue-on-error|if):/mu.test(gate) ||
+      /\|\||2>\s*\/dev\/null/u.test(gateRun)
+    ) {
+      problems.push(`${path} deployment-lock gate must not suppress a check or command failure`);
+    }
+    const registryCheck = gate.indexOf(
+      'node scripts/require-lockfile.mjs --verify-unpublished-transition'
+    );
+    const absentOutput = gate.indexOf(`printf 'present=false\\n' >> "$GITHUB_OUTPUT"`);
+    if (registryCheck === -1 || absentOutput === -1 || registryCheck > absentOutput) {
+      problems.push(
+        `${path} deployment-lock gate must verify public releases before reporting an absent lock`
+      );
+    }
+    if (
+      !/^\s+node scripts\/require-lockfile\.mjs --verify-unpublished-transition\s*$/mu.test(gate)
+    ) {
+      problems.push(`${path} deployment-lock release verification must run as a blocking command`);
+    }
+  }
+
+  if (!/^    needs:\s+static-policy\s*$/mu.test(dependencyLock)) {
+    problems.push(`${path} dependency-lock must depend on static-policy`);
+  }
+  if (!/^    if:\s+needs\.static-policy\.outputs\.deployment-lock\s*==\s*'true'\s*$/mu.test(dependencyLock)) {
+    problems.push(`${path} dependency-lock must run exactly when the reviewed lock gate reports present`);
+  }
+  if (!/^      -\s+dependency-lock\s*$/mu.test(containers)) {
+    problems.push(`${path} containers must depend on the frozen dependency-lock job`);
+  }
+  return problems;
+}
+
 export function dependencyUpdateWorkflowProblems(
   text,
   path = '.github/workflows/dependency-update-report.yml'
@@ -445,6 +596,18 @@ export function composePolicyProblems(text, path = 'docker-compose.yml') {
   requireText(text, '- collab-data:/data', path, problems);
   requireText(text, '- collab-network', path, problems);
   requireText(text, '- ai-network', path, problems);
+  for (const [service, expected] of [
+    ['collab-server', '1g'],
+    ['ai-proxy', '512m'],
+  ]) {
+    const serviceBlock = composeServiceBlock(text, service);
+    const limits = [...serviceBlock.matchAll(/^    mem_limit:\s*([^\s#]+)\s*(?:#.*)?$/gmu)].map(
+      (match) => match[1]
+    );
+    if (limits.length !== 1 || limits[0] !== expected) {
+      problems.push(`${path} ${service} must set exactly one mem_limit: ${expected}`);
+    }
+  }
   return problems;
 }
 
@@ -889,6 +1052,7 @@ export function collectPolicyProblems(repositoryRoot) {
   problems.push(...dependencyUpdateScriptProblems(dependencyUpdateScript));
 
   const ci = read(root, '.github/workflows/ci.yml', problems);
+  problems.push(...deploymentLockWorkflowProblems(ci));
   for (const fragment of [
     'docker compose',
     'build --check',

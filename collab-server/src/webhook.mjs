@@ -1,6 +1,6 @@
 // Minimal webhook notifier. Deliberately NOT @hocuspocus/extension-webhook:
-// that extension hard-depends on @hocuspocus/transformer, which ships the
-// whole @tiptap editor as a dependency just to serialize documents. This
+// that extension hard-depends on @hocuspocus/transformer, which ships an
+// entire rich-text editor as a dependency just to serialize documents. This
 // helper posts the same HMAC-signed JSON shape with zero dependencies, and
 // document content stays out of the payload (fetch it via the REST API when
 // the receiver needs it).

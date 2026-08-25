@@ -150,6 +150,71 @@ export function createCollabServer({
     else pendingUpdates.delete(payload.document);
   };
 
+  // Neither the extension nor better-sqlite3 sets journal_mode, so the
+  // connection would run the "delete" rollback journal, where SQLite restarts
+  // an in-progress online backup on every write: the live backup OPERATIONS.md
+  // documents could never converge on a busy server. The busy timeout is
+  // pinned because WAL makes waiting load-bearing: a checkpoint meeting a
+  // store cycle must wait, not fail with SQLITE_BUSY.
+  const configure = persistence.onConfigure?.bind(persistence);
+  if (!configure) {
+    throw new Error(
+      '@hocuspocus/extension-sqlite no longer exposes onConfigure; set journal_mode=WAL another way in create-server.mjs.'
+    );
+  }
+  persistence.onConfigure = async (payload) => {
+    await configure(payload);
+    if (!persistence.db) {
+      throw new Error(
+        '@hocuspocus/extension-sqlite no longer exposes its database handle; set journal_mode=WAL another way in create-server.mjs.'
+      );
+    }
+    // The switch is itself a write, so SQLITE_BUSY is possible while another
+    // connection holds a read transaction, and that must not be fatal: the
+    // server ran without WAL before. A filesystem that refuses WAL (many
+    // network mounts do) keeps the old mode silently, so the mode actually in
+    // force is read back either way and reported.
+    let journalMode;
+    try {
+      persistence.db.pragma('busy_timeout = 5000');
+      const [applied] = persistence.db.pragma('journal_mode = WAL');
+      journalMode = applied?.journal_mode ?? null;
+    } catch (error) {
+      journalMode = `unavailable, ${error instanceof Error ? error.message : String(error)}`;
+    }
+    // An in-memory database has no journal to switch and is never the
+    // subject of a backup.
+    if (journalMode !== 'wal' && database !== ':memory:') {
+      console.warn(
+        `[collab] SQLite journal_mode is "${String(journalMode)}", not WAL: the online backup in OPERATIONS.md can restart indefinitely on a busy server. Put the database on a filesystem that supports WAL.`
+      );
+    }
+  };
+
+  /**
+   * Seed an unowned, empty document exactly once. The onLoadDocument caller
+   * schedules persistence explicitly because Hocuspocus has not attached its
+   * update listener yet. Calls after loading, such as beforeSync, are persisted
+   * by Hocuspocus's normal update listener.
+   *
+   * @param {import('yjs').Doc} document
+   * @param {string} documentName
+   * @param {object} context
+   */
+  function seedWritableDocument(document, documentName, context) {
+    const meta = document.getMap(META_MAP);
+    const fragment = document.getXmlFragment(COLLAB_FIELD);
+    if (!seed || meta.get('seeded') === true || fragment.length !== 0) return false;
+    document.transact(
+      () => {
+        seed(fragment, documentName);
+        meta.set('seeded', true);
+      },
+      { source: 'local', context }
+    );
+    return true;
+  }
+
   return new Server({
     port,
     address: host,
@@ -196,6 +261,18 @@ export function createCollabServer({
       return { readOnly };
     },
 
+    // A document load is shared by every connection with the same name. If a
+    // read-only client starts that load, onLoadDocument correctly leaves the
+    // new document untouched, but it will not run again when a writer joins
+    // while the viewer remains connected. Seed at the writer's first sync
+    // boundary as well: this runs before sync state is exchanged, is
+    // synchronous and idempotent, and Hocuspocus's update listener is already
+    // attached, so the seed and ownership flag are broadcast and persisted.
+    async beforeSync({ document, documentName, context }) {
+      if (context?.readOnly === true || isVersionSibling(documentName)) return;
+      seedWritableDocument(document, documentName, context);
+    },
+
     // Runs after the SQLite extension restored any stored state, so the
     // seeded flag below reflects what persistence actually holds.
     async onLoadDocument({ instance, document, documentName, context }) {
@@ -207,11 +284,20 @@ export function createCollabServer({
       // A GET of a name nobody has opened yet must stay a read: seeding
       // here would let any read-only token materialize and persist welcome
       // content, and would let reads create documents. The websocket path
-      // owns seeding. (Loads are shared: when a REST read STARTS the load
-      // and a websocket client attaches microseconds later, the rest branch
-      // wins and that first visit goes unseeded. The window is the load
-      // duration, and the flag stays unset, so the next fresh load seeds.)
+      // owns seeding. Loads are shared: when a REST read starts the load and
+      // a writer attaches to that live document, beforeSync claims and seeds
+      // it before the writer's state exchange. Without a writer, the read
+      // remains side-effect free.
       if (context?.rest === true) {
+        return document;
+      }
+      // A read-only websocket connection must not create documents either:
+      // onAuthenticate merges its return value into this context, and without
+      // this branch a COLLAB_READONLY_TOKENS holder could open any unused
+      // name and have the store cycle below write a row for it. If a writer
+      // joins the shared live document, beforeSync claims and seeds it during
+      // that writer's first sync; a viewer-only visit stays empty and unowned.
+      if (context?.readOnly === true) {
         return document;
       }
       // Sibling documents that carry version snapshots hold no prose; welcome
@@ -227,11 +313,7 @@ export function createCollabServer({
       // for the opposite failure: a document whose first content arrived
       // through a path that forgot the flag must not get welcome content
       // injected on top of its real body.
-      const meta = document.getMap(META_MAP);
-      const fragment = document.getXmlFragment(COLLAB_FIELD);
-      if (seed && meta.get('seeded') !== true && fragment.length === 0) {
-        seed(fragment, documentName);
-        meta.set('seeded', true);
+      if (seedWritableDocument(document, documentName, context)) {
         // Hocuspocus attaches its store-scheduling update listener AFTER
         // this hook, so the seed alone would never reach persistence: a
         // look-only session would close with nothing debounced, unload

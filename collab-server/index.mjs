@@ -145,7 +145,10 @@ if (overlapping.length > 0) {
 // In production the same convenience is a hole anyone can walk through, so
 // the server refuses to start rather than warn into a log nobody reads.
 const PLACEHOLDER_TOKENS = new Set(['change-me', 'change-me-too', 'dev-token', 'viewer-token']);
-const production = process.env.NODE_ENV === 'production';
+// An absent NODE_ENV counts as production: a process manager or systemd unit
+// that never sets it would otherwise degrade every refusal below into a
+// warning. Only an explicit NODE_ENV=development asks for local behaviour.
+const production = process.env.NODE_ENV !== 'development';
 const webhookSecret = secretSetting('WEBHOOK_SECRET');
 const placeholdersInUse = [...tokens, ...readOnlyTokens].filter((token) =>
   PLACEHOLDER_TOKENS.has(token)
@@ -164,7 +167,7 @@ if (placeholdersInUse.length > 0) {
     process.exit(1);
   }
   console.warn(
-    `[collab] Placeholder tokens in use (${placeholdersInUse.join(', ')}): fine locally, refused when NODE_ENV=production.`
+    `[collab] Placeholder tokens in use (${placeholdersInUse.join(', ')}): fine locally, refused unless NODE_ENV=development.`
   );
 }
 
@@ -233,7 +236,7 @@ if (webhook && !webhook.secret) {
     process.exit(1);
   }
   console.warn(
-    'WEBHOOK_URL is set without WEBHOOK_SECRET: deliveries go out UNSIGNED by explicit non-production or WEBHOOK_ALLOW_UNSIGNED configuration.'
+    'WEBHOOK_URL is set without WEBHOOK_SECRET: deliveries go out UNSIGNED by explicit NODE_ENV=development or WEBHOOK_ALLOW_UNSIGNED=1 configuration.'
   );
 }
 if (webhook && new URL(webhook.url).protocol === 'http:') {
@@ -247,16 +250,6 @@ if (webhook && new URL(webhook.url).protocol === 'http:') {
     '[collab] WEBHOOK_URL uses unencrypted HTTP. Use HTTPS outside local or explicitly trusted private networks.'
   );
 }
-
-if (production && process.env.COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS !== '1') {
-  console.error(
-    'Refusing the permissive authorizeDocument policy in production. Replace the callback for tenant-scoped access, or set COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS=1 only for an intentionally single-team deployment.'
-  );
-  process.exit(1);
-}
-console.warn(
-  '[collab] authorizeDocument is the permissive placeholder: any valid token can reach any document. Replace it in index.mjs before multi-tenant use.'
-);
 
 function positiveByteLimit(raw, fallback, name) {
   if (raw === undefined || raw === '') return fallback;
@@ -284,6 +277,28 @@ async function authorizeDocument({ token, documentName, mode }) {
   void documentName;
   void mode;
   return true;
+}
+// Delete this line together with the starter body above: it arms both guards below.
+authorizeDocument.isPermissiveStarter = true;
+
+// Keyed to the marker, not the environment alone: a deployment that replaced
+// the callback must not be refused for a policy it no longer runs, and a
+// warning on every correct boot teaches operators to ignore the one that
+// matters.
+if (
+  authorizeDocument.isPermissiveStarter === true &&
+  production &&
+  process.env.COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS !== '1'
+) {
+  console.error(
+    'Refusing the permissive authorizeDocument policy in production. Replace the callback for tenant-scoped access, or set COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS=1 only for an intentionally single-team deployment.'
+  );
+  process.exit(1);
+}
+if (authorizeDocument.isPermissiveStarter === true) {
+  console.warn(
+    '[collab] authorizeDocument is the permissive placeholder: any valid token can reach any document. Replace it in index.mjs before multi-tenant use.'
+  );
 }
 
 // Hocuspocus binds ALL interfaces when no address is given, so the host is

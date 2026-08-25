@@ -120,7 +120,10 @@ test('rejects a dependency symlink that escapes deployed node_modules', () => {
   try {
     const packageRoot = join(root, 'node_modules', '@domternal', 'core');
     rmSync(packageRoot, { recursive: true });
-    json(join(outside, 'package.json'), { name: '@domternal/core', version: '0.15.0' });
+    json(join(outside, 'package.json'), {
+      name: '@domternal/core',
+      version: EXACT_RUNTIME_DEPENDENCIES['@domternal/core'],
+    });
     symlinkSync(outside, packageRoot, 'dir');
     assert.ok(
       runtimeArtifactProblems(root).some((problem) =>

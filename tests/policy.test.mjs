@@ -11,6 +11,7 @@ import {
   collectPolicyProblems,
   composePolicyProblems,
   dependabotVersionUpdateProblems,
+  deploymentLockWorkflowProblems,
   dependencyUpdateScriptProblems,
   dependencyUpdateWorkflowProblems,
   finalDockerStageUserProblems,
@@ -34,6 +35,7 @@ const dependencyUpdateScript = readFileSync(
   resolve(root, 'scripts/check-updates.mjs'),
   'utf8'
 );
+const ciWorkflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
 const issueRouting = readFileSync(
   resolve(root, '.github/ISSUE_TEMPLATE/config.yml'),
   'utf8'
@@ -236,6 +238,122 @@ test('required workflows cover main, pull requests and the merge queue', () => {
   );
 });
 
+test('the temporary deployment lock transition fails closed', () => {
+  assert.deepEqual(deploymentLockWorkflowProblems(ciWorkflow), []);
+  const mutations = [
+    ['shallow history', ['          fetch-depth: 0', '          fetch-depth: 1']],
+    ['supported Node release', ['          node-version: 22.23.2', '          node-version: 22.23.1']],
+    ['shell failure handling', ['set -euo pipefail', 'set -uo pipefail']],
+    [
+      'default branch fetch failure',
+      [
+        '            "+refs/heads/$DEFAULT_BRANCH:$default_ref"',
+        '            "+refs/heads/$DEFAULT_BRANCH:$default_ref" || true',
+      ],
+    ],
+    ['default branch history', ['history_refs=("$default_ref")', 'history_refs=()']],
+    ['push event handling', ['if [ "$EVENT_NAME" = push ]; then', 'if false; then']],
+    [
+      'prior push revision fetch',
+      ['git fetch --force --no-tags origin "$BEFORE_SHA"', 'echo "$BEFORE_SHA"'],
+    ],
+    [
+      'historical path search',
+      [
+        'git log -1 --format=%H "$history_ref" -- "$lock_path"',
+        'git show "$history_ref:$lock_path"',
+      ],
+    ],
+    [
+      'historical result condition',
+      ['if [ -n "$previous_lock_commit" ]; then', 'if [ -z "$previous_lock_commit" ]; then'],
+    ],
+    [
+      'public release transition check',
+      [
+        'node scripts/require-lockfile.mjs --verify-unpublished-transition',
+        'node scripts/require-lockfile.mjs',
+      ],
+    ],
+    [
+      'suppressed public release transition check',
+      [
+        'node scripts/require-lockfile.mjs --verify-unpublished-transition',
+        'node scripts/require-lockfile.mjs --verify-unpublished-transition || echo ignored',
+      ],
+    ],
+    [
+      'early successful exit before public release verification',
+      [
+        '          node scripts/require-lockfile.mjs --verify-unpublished-transition',
+        [
+          '          exit 0',
+          '          node scripts/require-lockfile.mjs --verify-unpublished-transition',
+        ].join('\n'),
+      ],
+    ],
+    [
+      'job output binding',
+      [
+        '      deployment-lock: ${{ steps.deployment-lock.outputs.present }}',
+        "      deployment-lock: 'false'",
+      ],
+    ],
+    [
+      'dependency gate condition',
+      [
+        "    if: needs.static-policy.outputs.deployment-lock == 'true'",
+        "    if: needs.static-policy.outputs.deployment-lock != 'true'",
+      ],
+    ],
+    ['container dependency', ['      - dependency-lock', '      - static-policy']],
+  ];
+  for (const [name, [original, replacement]] of mutations) {
+    const changed = ciWorkflow.replace(original, replacement);
+    assert.notEqual(changed, ciWorkflow, `${name} mutation must change the fixture`);
+    assert.notDeepEqual(deploymentLockWorkflowProblems(changed), [], name);
+  }
+  assert.notDeepEqual(
+    deploymentLockWorkflowProblems(
+      ciWorkflow.replace('        id: deployment-lock', '        id: deployment-lock\n        continue-on-error: true')
+    ),
+    []
+  );
+  for (const [name, changed] of [
+    [
+      'dependency-lock job-level continue-on-error',
+      ciWorkflow.replace(
+        '  dependency-lock:\n    name:',
+        '  dependency-lock:\n    continue-on-error: true\n    name:'
+      ),
+    ],
+    [
+      'dependency-lock step-level continue-on-error',
+      ciWorkflow.replace(
+        '      - name: Require the real registry-produced deployment lock\n',
+        '      - name: Require the real registry-produced deployment lock\n        continue-on-error: true\n'
+      ),
+    ],
+    [
+      'containers job-level continue-on-error',
+      ciWorkflow.replace(
+        '  containers:\n    name:',
+        '  containers:\n    continue-on-error: true\n    name:'
+      ),
+    ],
+    [
+      'containers step-level continue-on-error',
+      ciWorkflow.replace(
+        '      - name: Run ephemeral container end-to-end suite\n',
+        '      - name: Run ephemeral container end-to-end suite\n        continue-on-error: true\n'
+      ),
+    ],
+  ]) {
+    assert.notEqual(changed, ciWorkflow, `${name} mutation must change the fixture`);
+    assert.notDeepEqual(deploymentLockWorkflowProblems(changed), [], name);
+  }
+});
+
 test('direct secret exposure is rejected even when *_FILE remains configured', () => {
   const compose = `
 services:
@@ -303,6 +421,29 @@ test('read-only Compose services require every secret to come from a host file',
       problems.some((problem) => problem.includes('incompatible with read-only services')),
       sourceVariable
     );
+  }
+});
+
+test('production Compose services keep their exact memory ceilings', () => {
+  const compose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
+  assert.deepEqual(composePolicyProblems(compose), []);
+  for (const [service, expected, replacement] of [
+    ['collab-server', '1g', '2g'],
+    ['ai-proxy', '512m', '1g'],
+  ]) {
+    for (const changed of [
+      compose.replace(`    mem_limit: ${expected}`, `    mem_limit: ${replacement}`),
+      compose.replace(`    mem_limit: ${expected}\n`, ''),
+      compose.replace(
+        `    mem_limit: ${expected}`,
+        `    mem_limit: ${expected}\n    mem_limit: ${expected}`
+      ),
+    ]) {
+      assert.match(
+        composePolicyProblems(changed).join('\n'),
+        new RegExp(`${service} must set exactly one mem_limit: ${expected}`, 'u')
+      );
+    }
   }
 });
 

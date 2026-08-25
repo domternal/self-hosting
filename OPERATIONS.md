@@ -16,42 +16,13 @@ validated substitutes. Confirm `docker compose version` and run
 
 ## Secrets
 
-Create the default host files and generate independent high-entropy caller
-tokens:
-
-```bash
-install -d -m 700 secrets
-(
-  set -euC
-  for path in \
-    secrets/collab_tokens \
-    secrets/collab_readonly_tokens \
-    secrets/webhook_secret \
-    secrets/provider_api_key \
-    secrets/ai_tokens
-  do
-    if [ -e "$path" ]; then
-      echo "Refusing to overwrite $path" >&2
-      exit 1
-    fi
-  done
-  umask 022
-  openssl rand -hex 32 > secrets/collab_tokens
-  openssl rand -hex 32 > secrets/ai_tokens
-  : > secrets/collab_readonly_tokens
-  : > secrets/webhook_secret
-  : > secrets/provider_api_key
-  chmod 644 \
-    secrets/collab_tokens \
-    secrets/collab_readonly_tokens \
-    secrets/webhook_secret \
-    secrets/provider_api_key \
-    secrets/ai_tokens
-)
-```
-
-The subshell refuses to overwrite any existing source file. Edit or rotate an
-existing deployment deliberately instead of rerunning initialization over it.
+The one-time bootstrap that creates the default host files and generates
+independent high-entropy caller tokens is in the
+[README quick start](./README.md#quick-start), where a first-time reader needs
+it. It refuses to overwrite an existing source file, so edit or rotate an
+existing deployment deliberately instead of rerunning it. The rest of this
+section is why those commands look the way they do, and it is the reference for
+everything after the first day.
 
 Put the provider-issued key in `secrets/provider_api_key`. Leave the viewer and
 webhook files empty until those features are enabled, then add independent
@@ -105,16 +76,209 @@ system that provides authenticity.
 ## Edge exposure and aggregate limits
 
 Keep the shipped loopback bindings unless an authenticated TLS reverse proxy
-or private gateway is ready in front of them. At that edge, cap simultaneous
+or private gateway is ready in front of them
+([worked configuration](#reverse-proxy-and-tls)). At that edge, cap simultaneous
 connections, requests per authenticated user and source, and aggregate request
 body throughput for both services. Keep gateway body limits at or below the
 application limits unless the application limits are changed and retested.
 
 The application bounds each websocket frame, REST body and AI request, while
-Compose limits process count. Those controls do not cap the memory, sockets or
-provider spend created by many individually valid requests at once. Configure
+Compose limits process count and caps each container's memory. Those controls
+still do not cap the sockets or the provider spend created by many
+individually valid requests at once, and a container that reaches its memory
+ceiling is killed and restarted rather than slowed down. Configure
 idle and upstream timeouts at the gateway too, but keep them long enough for
 expected collaboration sessions and streaming AI responses.
+
+## Reverse proxy and TLS
+
+Neither service terminates TLS, and both bind host loopback, so the proxy runs
+on the same host and is the only thing users reach. The nginx configuration
+below is a starting point, written around the three failures that arrive quietly
+rather than loudly: a websocket that never finishes its handshake, a websocket
+that drops on a fixed interval, and an AI reply that arrives all at once,
+seconds late.
+
+```nginx
+# Hop-by-hop upgrade handling. 'close' for ordinary requests, because a
+# hardcoded "Connection: upgrade" breaks keepalive on everything else.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl;
+    server_name collab.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/collab.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/collab.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:1234;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host       $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name ai.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/ai.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ai.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:1250;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        proxy_read_timeout 300s;
+        client_max_body_size 1m;
+    }
+}
+```
+
+Which directive answers which failure:
+
+- `proxy_http_version 1.1` with the two `Upgrade`/`Connection` headers and the
+  `map` block: without them nginx speaks HTTP/1.0 upstream and drops the
+  hop-by-hop upgrade headers, so the handshake never completes. The symptom is a
+  provider that reconnects forever while the collaboration server logs nothing,
+  because no connection ever reached it.
+- `proxy_read_timeout` (and `proxy_send_timeout` for symmetry): nginx closes a
+  connection when the upstream has produced nothing for this long, and the
+  default is 60 seconds. A document nobody is typing in produces nothing between
+  keepalives, so a short timeout shows up as sessions dropping and resyncing on
+  a fixed interval. Keep it well above the keepalive interval of both ends.
+- `proxy_buffering off`, plus `proxy_cache off` and `gzip off` in that same
+  location: with buffering on, nginx collects the AI proxy's `text/event-stream`
+  into its proxy buffers and forwards it when they fill, so tokens that were
+  streamed word by word arrive as one block after a long pause. Compression
+  re-introduces exactly that delay by buffering to compress, which is why `gzip`
+  is off here rather than only globally.
+- `client_max_body_size 1m`: matches the proxy's own 1 MB request cap, so an
+  oversized prompt is refused at the edge with a 413 instead of having its
+  socket torn down. Keep gateway limits at or below the application limits.
+
+Authentication stays with the services, but they do not all read the token from
+the same place. The AI proxy, and the REST API if you publish it, read
+`Authorization: Bearer`, so nginx must forward that header untouched: do not
+set `proxy_set_header Authorization ""` in those blocks. The collaboration
+websocket carries its token in the connection the client opens rather than in a
+proxied request header, so it needs the upgrade headers below instead. Add
+the per-user and per-source `limit_conn` and `limit_req` zones this runbook asks
+for in [Edge exposure and aggregate limits](#edge-exposure-and-aggregate-limits)
+to the same locations.
+
+Serving the AI proxy from the application's own origin (a `location /ai/` in the
+app's server block, with `proxy_pass http://127.0.0.1:1250/;` and the same four
+streaming directives) needs no CORS at all. A separate hostname, as above, needs
+the exact app origins in `ALLOWED_ORIGINS`.
+
+The REST API on port 1235 is deliberately absent from these blocks. It is an
+administrative surface: publish it only where you need it, to the clients that
+need it, and give it `client_max_body_size 8m` to match its own body cap.
+
+## When it does not start
+
+The refusals below that name production are armed unless `NODE_ENV` is exactly
+`development`. An unset, empty, `test` or `staging` value counts as production,
+deliberately: a systemd unit or a bare Kubernetes Deployment sets nothing, and
+those are exactly the hosts that need the refusal. `npm start` and both Docker
+images force production, so `NODE_ENV=development` is something you ask for
+explicitly. The refusals that do not name production, an empty `COLLAB_TOKENS`
+and an unwritable data directory among them, fire in every environment.
+
+Build:
+
+- `[dependency-lock] FAILED: ... package-lock.json is missing; publish
+  @domternal-pro/core@1.0.0 and @domternal-pro/extension-comments@1.0.0, then
+  generate the real public-registry lock (never fabricate or vendor it)`: the
+  image build checks the committed lock before installing anything. The lock is
+  a deployment artifact, not a local file: generate it from the public registry
+  once those releases exist, and never hand-write or vendor one.
+- `set UPSTREAM_URL to your provider endpoint`: Compose refuses before any
+  container starts, because `docker-compose.yml` marks that variable required.
+  It comes from the root `.env`, which `.env.example` already fills in.
+
+Collaboration server:
+
+- `Set COLLAB_TOKENS to at least one accepted token (comma separated).`: the
+  token list is empty. This one is not environment-dependent, and with Compose
+  the value comes from `secrets/collab_tokens`, not from the environment.
+- `Refusing to start with placeholder tokens in production`, followed by the
+  offending values: they were copied out of `.env.example`. Replace them with
+  `openssl rand -hex 32` output.
+- `Refusing production secrets shorter than 32 UTF-8 bytes`, followed by the
+  settings that failed: same fix. `openssl rand -hex 32` satisfies every token
+  rule at once. Secret values themselves are never logged.
+- `Refusing the permissive authorizeDocument policy in production.`: the shipped
+  starter policy is still in `index.mjs`, recognized by its
+  `authorizeDocument.isPermissiveStarter = true;` marker. Replace the callback
+  and delete that line with it, or set
+  `COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS=1` for a deliberate single-tenant
+  deployment.
+- `SQLITE_PATH="/data/collab.sqlite" is not writable by this process.`: the
+  process cannot write the database or create its sidecars beside it. Under
+  Docker the cause is a `collab-data` volume still owned by root from an image
+  that predates the non-root containers, and the README has the one-time
+  ownership migration; on bare metal it is ordinary directory permissions. The
+  refusal is deliberate: SQLite would otherwise fall back to read-only and every
+  save would fail while the process looked healthy.
+- `COLLAB_TOKENS and COLLAB_TOKENS_FILE are both set; use exactly one.`: a
+  direct value and a mounted file both arrived. Compose uses the `_FILE` form,
+  so clear the direct one.
+- `Refusing to start unsigned webhooks in production.` or `Refusing an HTTP
+  WEBHOOK_URL in production`: set `WEBHOOK_SECRET` and an HTTPS `WEBHOOK_URL`,
+  or declare the exception with `WEBHOOK_ALLOW_UNSIGNED=1` or
+  `WEBHOOK_ALLOW_INSECURE_HTTP=1` when an outer system provides authenticity or
+  a trusted private transport.
+
+AI proxy:
+
+- `Refusing to start a hosted provider without PROVIDER_API_KEY in production.`:
+  the bootstrap creates `secrets/provider_api_key` empty on purpose. Put the
+  provider-issued key in it, use `PROVIDER=none` for a local model, or start
+  only the collaboration service (`docker compose up --build collab-server`).
+- `Refusing to start without AI_TOKENS in production.`: no caller tokens.
+  Generate one, or set `AI_ALLOW_UNAUTHENTICATED=1` when a gateway in front of
+  the process, or a replaced `authorizeRequest`, authenticates every request.
+- `Refusing to start with placeholder tokens in production` and `Refusing
+  AI_TOKENS shorter than 32 UTF-8 bytes in production.`: same fix as the
+  collaboration server's token guards.
+- `Refusing an HTTP UPSTREAM_URL for a hosted provider in production`: the API
+  key and the prompts would travel unencrypted. Use HTTPS, or
+  `UPSTREAM_ALLOW_INSECURE_HTTP=1` for an explicitly trusted private transport.
+
+Either service, on a port that is taken or a host that does not exist:
+`[collab] Could not listen on 0.0.0.0:1234: the port is already in use` and
+`[ai-proxy] Could not listen on 127.0.0.1:1250: the host address is not
+available on this machine`. Change `PORT`, `REST_PORT` or `HOST`, or stop
+whatever holds the port.
+
+It starts but warns:
+
+- `[collab] SQLite journal_mode is "delete", not WAL: the online backup in
+  OPERATIONS.md can restart indefinitely on a busy server.`: the filesystem
+  under `/data` refused WAL, which network mounts commonly do. The consistent
+  backup below can then restart forever on a busy server, so move the database
+  to a filesystem that supports WAL.
+- `[collab] N token(s) appear in both COLLAB_TOKENS and COLLAB_READONLY_TOKENS`:
+  they resolve to read-only on both surfaces. Remove them from `COLLAB_TOKENS`.
+- `[collab] authorizeDocument is the permissive placeholder`: the marker is
+  still there and `COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS=1` is declaring that
+  deliberately.
 
 ## Health and integrity
 
@@ -131,12 +295,15 @@ client/API smoke test.
 
 ## Consistent backup
 
-Do not copy `collab.sqlite` directly while the service runs. Committed pages can
-still live in SQLite's WAL, so a plain file copy can silently omit recent edits.
-The maintenance command uses SQLite's online backup API and verifies the result.
-The temporary snapshot is created on `/data`, not the deliberately 64 MiB
-`/tmp`; ensure the volume has at least one additional database-size worth of
-free space before starting.
+Do not copy `collab.sqlite` directly while the service runs. The server puts the
+database in WAL mode at startup, so committed pages live in `collab.sqlite-wal`
+until a checkpoint folds them in, and a copy of the main file alone silently
+omits recent edits. That is why `/data` holds `collab.sqlite`,
+`collab.sqlite-wal` and `collab.sqlite-shm` while the service runs. The
+maintenance command uses SQLite's online backup API and verifies the result. The
+temporary snapshot is created on `/data`, not the deliberately 64 MiB `/tmp`;
+ensure the volume has at least one additional database-size worth of free space,
+plus room for a WAL that grows between checkpoints, before starting.
 
 ```bash
 set -eu
@@ -222,7 +389,14 @@ docker compose exec -T collab-server rm -f "$restore_input"
 The command prints the exact `/data/collab.sqlite.before-restore-*` rollback
 path. Keep it until users verify current documents and versions. Remove that
 rollback file only after the retention decision; the command block removes its
-unique restore input after the integrity check succeeds.
+unique restore input after the integrity check succeeds. Replacement also
+removes the live database's `-journal`, `-wal` and `-shm` sidecars, and the
+server recreates the WAL pair on its next start.
+
+A restore that fails after the rollback copy exists names that copy in the
+failure itself: `[sqlite-maintenance] FAILED: Restore failed after the rollback
+copy was created: <cause>. Previous database preserved at <path>.` The previous
+database is recoverable from that one line, so keep it.
 
 If an import or restore step fails, keep the collaboration service stopped and
 retain the unique input while diagnosing it. Remove only that exact path when

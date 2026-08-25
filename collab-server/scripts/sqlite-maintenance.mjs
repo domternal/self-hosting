@@ -114,28 +114,45 @@ export async function restoreDatabase(rawSource, rawTarget) {
   const suffix = new Date().toISOString().replaceAll(':', '-');
   const candidate = `${target}.restore-${process.pid}-${Date.now()}`;
   const rollback = `${target}.before-restore-${suffix}-${String(process.pid)}`;
+  let candidateOwned = false;
+  let rollbackOwned = false;
   try {
     // The restore input can itself be a live WAL-mode database. Materialize a
     // consistent SQLite snapshot instead of copying only its main file and
     // silently dropping committed pages that still live in its WAL.
     await backupDatabase(source, candidate);
+    candidateOwned = true;
     if (existsSync(target)) {
       // A byte copy of the main file is NOT a backup when crash-recovery data
       // still lives in -wal. SQLite's online backup API reads one consistent
       // snapshot including committed WAL pages, then verifies it before any
       // live file or sidecar is touched.
       await backupDatabase(target, rollback);
+      rollbackOwned = true;
     }
     for (const sidecar of [`${target}-journal`, `${target}-shm`, `${target}-wal`]) {
       rmSync(sidecar, { force: true });
     }
     renameSync(candidate, target);
+    candidateOwned = false;
     syncDirectory(dirname(target));
   } catch (error) {
-    rmSync(candidate, { force: true });
+    if (candidateOwned) rmSync(candidate, { force: true });
+    // Everything after the rollback copy can leave the live database stripped
+    // of its sidecars or already replaced, and only the success line in main()
+    // ever names the rollback. An operator whose rename failed would be told
+    // what broke and not where the old database went. The flag is what
+    // separates that from a failure to CREATE the rollback, where the file on
+    // disk is the operator's own and the live database was never touched.
+    if (rollbackOwned) {
+      throw new Error(
+        `Restore failed after the rollback copy was created: ${error instanceof Error ? error.message : String(error)}. Previous database preserved at ${rollback}.`,
+        { cause: error }
+      );
+    }
     throw error;
   }
-  return existsSync(rollback) ? rollback : null;
+  return rollbackOwned ? rollback : null;
 }
 
 async function main() {

@@ -25,6 +25,12 @@ That is a generic relay: fine for trying the editor, not for production. It does
 
 Use this repository as a GitHub template (or clone it), then set up each service.
 
+One thing to know before the first command: this revision does not carry
+`collab-server/package-lock.json`, because that lock can only be produced once
+the exact Domternal Pro packages it resolves are on the public registry. Until
+it ships, the `npm ci` below and the collaboration image build both stop with a
+message saying so, while everything else in this repository works as described.
+
 The collaboration server, with the full walkthrough in [`collab-server/README.md`](./collab-server/README.md):
 
 ```bash
@@ -43,9 +49,7 @@ artifact, not a disposable local file. `--ignore-scripts` prevents dependencies
 from executing lifecycle code during installation, while `--strict-peer-deps`
 turns an ambiguous peer resolution into a failure; the next command runs only
 the reviewed native build required by `better-sqlite3`. Together they install
-the same transitive code CI tested and Docker deploys. Maintainers must not
-publish a template revision until the exact Pro packages exist on npm and the
-real registry-produced lock passes the release checklist.
+the same transitive code CI tested and Docker deploys.
 
 The AI proxy, with the full walkthrough in [`ai-proxy/README.md`](./ai-proxy/README.md):
 
@@ -99,28 +103,35 @@ install -d -m 700 secrets
 # COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS='1'. Multi-tenant users must instead
 # replace authorizeDocument in collab-server/index.mjs before starting.
 docker compose config --quiet
-docker compose up --build
 ```
 
 `cp -n` keeps an existing `.env`, and the secret setup refuses to overwrite any
 existing source file. Edit or rotate existing settings deliberately instead of
-rerunning initialization over them.
+rerunning initialization over them. Both `.env` and `secrets/` are ignored by
+Git and must never be committed.
 
-Compose bind-mounts each ignored host file read-only under `/run/secrets` only
-for the service that needs it; values do not enter the container environment or
-image layers. Mode `700` on the host directory blocks other host users, while
-mode `644` on files lets the fixed container uid 1000 read the bind mount.
-Compose does not implement uid/gid remapping for file-backed secrets, so mode
-`600` is not portable when host and container uids differ. Both `.env` and
-`secrets/` are ignored by Git and must never be committed. Override the five
-`*_SOURCE_FILE` values in `.env` when a host secret manager provides files at
-other paths; the applications continue to read the fixed `*_FILE` paths inside
-their containers.
+Why those modes, what each service is allowed to read, and how to point the five
+`*_SOURCE_FILE` variables at a host secret manager are covered once, in
+[`OPERATIONS.md`](./OPERATIONS.md#secrets).
+
+Then start only the services you want:
+
+```bash
+docker compose up --build collab-server        # collaboration only
+docker compose up --build                      # collaboration and the AI proxy
+```
+
+Starting both needs a real provider key in `secrets/provider_api_key`, because
+the AI proxy refuses to start without one outside development and
+`restart: unless-stopped` then retries it for as long as the deployment lives.
+The bootstrap above creates that file empty on purpose, so a collaboration-only
+deployment names its one service instead.
 
 The shipped Compose posture is intentionally conservative:
 
 - all published ports bind to host loopback; put an authenticated TLS reverse
-  proxy in front or deliberately change the host IP when remote clients need it
+  proxy in front ([worked nginx configuration](./OPERATIONS.md#reverse-proxy-and-tls))
+  or deliberately change the host IP when remote clients need it
 - both root filesystems are read-only, `/tmp` is a small `noexec` tmpfs, all
   Linux capabilities are dropped and privilege escalation is disabled
 - collaboration and AI use separate bridge networks
@@ -157,47 +168,28 @@ docker compose run --rm --user 0 --cap-add CHOWN --no-deps collab-server chown -
 
 Fresh deployments never need this: a volume created by the current image is owned correctly from the start.
 
-### What CI verifies once the release lock exists
-
-The public repository first runs dependency-free syntax and security-policy
-tests and validates Compose, then requires a real frozen npm install. Once the
-exact Pro releases and registry-produced lock exist, native amd64 and arm64 jobs
-build locally (never push), start an ephemeral stack, and check
-non-root/read-only/capability policy, mounted secrets, health, REST auth, native
-SQLite, persistence across restart, consistent backup/restore, commercial
-notices, AI streaming/CORS/error behavior and cleanup. CodeQL, dependency
-review, Dependabot vulnerability alerts, a weekly read-only upstream-version
-report and two-stage Trivy scanning cover ongoing supply-chain drift. The
-version report creates no branch, pull request or issue; Trivy reports
-everything and blocks fixable high/critical findings. The report covers exact
-runtime npm dependencies, the latest Node LTS, Node Docker patch and digest
-drift, Alpine base lines, pinned GitHub Actions, actionlint and Trivy. A known
-incompatible update remains visible as a weekly reminder until it is reviewed.
-
-Until that lock can be generated, CI intentionally stops at the dependency
-gate instead of substituting a private workspace or hand-written artifact; the
-[maintainer checklist](./docs/MAINTAINER-RELEASE-CHECKLIST.md) names the exact
-release-order blocker and the upstream mirror procedure.
-
 ## Before production
 
 Each service isolates what you must replace in clearly marked spots:
 
 - **`collab-server`**: replace the centralized `authorizeDocument` callback in
   `index.mjs` with tenant-aware document authorization, and replace the static
-  token lookup in `src/create-server.mjs` with your JWT/session lookup.
-  Production refuses the permissive starter callback unless
+  token lookups in `src/create-server.mjs` and `src/rest.mjs` with your
+  JWT/session lookup. Production refuses the shipped starter callback while its
+  `isPermissiveStarter` marker is in place, unless
   `COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS=1` explicitly declares an
-  intentional single-tenant/global-token model. Persistence is not on this
-  list: SQLite is production-fine for one process; use a shared database when
-  you scale horizontally.
+  intentional single-tenant/global-token model; deleting the marker with the
+  starter body is what retires both that refusal and the opt-in. Persistence is
+  not on this list: SQLite is production-fine for one process; use a shared
+  database when you scale horizontally.
 - **`ai-proxy`**: the caller check in `src/create-proxy.mjs` (swap the static token list for your session check).
 
-Replace the token checks first. A static token list reaches the browser, so any user can read one out and use it outside your app, and withdrawing it cuts off everyone at once. Both services refuse to start with placeholder tokens when `NODE_ENV=production`, so a forgotten `change-me` fails loudly instead of shipping.
+Replace the token checks first. A static token list reaches the browser, so any user can read one out and use it outside your app, and withdrawing it cuts off everyone at once. Both services refuse to start with placeholder tokens unless `NODE_ENV` is exactly `development`, so a forgotten `change-me` fails loudly instead of shipping, including on a host that sets no `NODE_ENV` at all.
 
-Also terminate TLS before these services, restrict that gateway/firewall to the
-clients that need each port, and keep provider/document backups under your own
-retention policy. Loopback defaults prevent accidental public exposure; they do
+Also terminate TLS before these services
+([worked nginx configuration](./OPERATIONS.md#reverse-proxy-and-tls)), restrict
+that gateway/firewall to the clients that need each port, and keep
+provider/document backups under your own retention policy. Loopback defaults prevent accidental public exposure; they do
 not replace authentication, tenant authorization or TLS when you expose them.
 At the same edge, enforce per-user and per-source connection, request-rate and
 aggregate body limits. The application limits each request or frame, but many
@@ -207,9 +199,14 @@ budget.
 ## Support, contributions and license
 
 This repository is MIT licensed and provided as is: it is a starting point you
-own and adapt, not a managed product. The `@domternal-pro` packages it installs
-remain under the [Domternal Pro commercial license](https://domternal.dev/license/),
-and running them in production needs a license key. See [SUPPORT.md](./SUPPORT.md)
+may copy and adapt under that license, not a managed product. The
+`@domternal-pro` packages it installs remain under the
+[Domternal Pro commercial license](https://domternal.dev/license/),
+and running them in production needs a license key. That key belongs to your
+application build, not to these servers: you pass it to `setLicenseKey` where
+your editor starts, and neither service here reads, stores or validates one.
+[Installation and licensing](https://domternal.dev/v1/pro/licensing/) covers
+where it goes and how offline validation works. See [SUPPORT.md](./SUPPORT.md)
 for help and defect reporting, [CONTRIBUTING.md](./CONTRIBUTING.md) before
 proposing a change, and [SECURITY.md](./SECURITY.md) for private vulnerability
 reporting.

@@ -363,10 +363,26 @@ export function createRestServer({
       }
       const rest = segments.slice(2);
       const mode = req.method === 'POST' ? 'write' : 'read';
-      if (
-        (await authorizeDocument({ token, documentName: name, mode, surface: 'rest' })) !== true
-      ) {
-        json(res, 403, { error: `Not authorized for document "${name}"` });
+      // The versions routes open the sibling, not the parent, and websocket
+      // clients authorize that sibling under its own name. Authorizing the
+      // parent here would put one document under two policies by surface: a
+      // strict allowlist would break version history in the editor while REST
+      // kept serving snapshots, and a document literally named
+      // "<parent>-versions" would be reachable without its own authorization.
+      // One condition decides both the authorized and the opened name.
+      const versionsRoute = rest[0] === 'versions' && req.method === 'GET';
+      const versionsDoc = `${name}-versions`;
+      const documentName = versionsRoute ? versionsDoc : name;
+      // The suffix adds bytes, so a name that passed the contract can derive
+      // a sibling that does not. The name actually opened is the one that has
+      // to hold, or REST stores a key websocket would refuse.
+      const invalidDerivedName = documentName === name ? null : documentNameError(documentName);
+      if (invalidDerivedName !== null) {
+        json(res, 400, { error: invalidDerivedName });
+        return;
+      }
+      if ((await authorizeDocument({ token, documentName, mode, surface: 'rest' })) !== true) {
+        json(res, 403, { error: `Not authorized for document "${documentName}"` });
         return;
       }
 
@@ -450,12 +466,10 @@ export function createRestServer({
         }
       }
 
-      // Version snapshots live in the sibling document the version store
-      // syncs under a derived name; entries are Y.Maps holding metadata plus
-      // the full-state blob captured at save time.
-      if (rest[0] === 'versions' && req.method === 'GET') {
-        const versionsDoc = `${name}-versions`;
-
+      // Version snapshots live in the sibling document authorized above;
+      // entries are Y.Maps holding metadata plus the full-state blob captured
+      // at save time.
+      if (versionsRoute) {
         // GET /documents/{name}/versions
         if (rest.length === 1) {
           const versions = await withDocument(versionsDoc, (document) => {
