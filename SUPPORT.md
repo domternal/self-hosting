@@ -5,7 +5,10 @@
 Start with the repository [README](./README.md), then use the service-specific
 guides in [`collab-server/`](./collab-server/README.md) and
 [`ai-proxy/`](./ai-proxy/README.md). Backup, restore, upgrade and rollback
-procedures are in [`OPERATIONS.md`](./OPERATIONS.md). The complete product guide
+procedures are in [`OPERATIONS.md`](./OPERATIONS.md). When a service refuses to
+start, look the exact message up in
+[When it does not start](./OPERATIONS.md#when-it-does-not-start) before opening
+a report: these refusals are deliberate and each one names its own fix. The complete product guide
 is in the [Domternal self-hosting documentation](https://domternal.dev/v1/pro/self-hosting/).
 
 ## Questions and defects

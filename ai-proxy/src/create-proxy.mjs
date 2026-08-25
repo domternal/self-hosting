@@ -12,8 +12,10 @@
 // Nothing here logs request or response bodies: prompts carry your users'
 // document text. Keep it that way in your own edits; if you need
 // observability, log status codes and durations, never content.
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 // Request-body ceiling: prompts ride along with document context, but stay
 // far below this. One token holder must not be able to buffer the process
@@ -28,6 +30,7 @@ const MAX_REQUEST_TIMEOUT_MS = 300_000;
 const MAX_BEARER_TOKEN_BYTES = 4_096;
 const MAX_PROVIDER_KEY_BYTES = 4_096;
 const BEARER_TOKEN = /^[A-Za-z0-9\-._~+/]+=*$/u;
+const JSON_CONTENT_TYPE = /^application\/json\s*(?:;.*)?$/iu;
 const SECURITY_HEADERS = {
   'cache-control': 'no-store',
   'x-content-type-options': 'nosniff',
@@ -54,24 +57,38 @@ function providerHeaders(provider, apiKey) {
 }
 
 /**
- * Caller authorization, run on every request. The default accepts the
- * static token list from the environment: your app sends one of them as
- * "Authorization: Bearer <token>" (the editor's `headers` option takes an
- * async function, so a short-lived session token works too). Replace the
- * body with your real check (verify a JWT, hit your session store); the
- * incoming string is whatever your app put in that header. The call site
- * awaits, so an async replacement is a drop-in.
+ * Caller authorization, and the whole decision: the call site runs this on
+ * every request, the empty-token-list case included, and accepts only a
+ * literal true. The default accepts the static token list; your app sends one
+ * as "Authorization: Bearer <token>" (the editor's `headers` option takes an
+ * async function, so a short-lived session token works too). Replace the body
+ * with your real check; `token` is null when no usable bearer token arrived,
+ * worth refusing before any lookup so anonymous traffic cannot become a flood
+ * of session lookups. The call site awaits, so async is a drop-in.
  *
- * An empty token list accepts every caller. The entrypoint refuses that
- * configuration in production unless AI_ALLOW_UNAUTHENTICATED=1 states
- * that a gateway in front of this process authenticates every request.
+ * An empty token list accepts every caller, decided here so a replacement
+ * that ignores `tokens` still governs every request. The entrypoint refuses
+ * that configuration in production unless AI_ALLOW_UNAUTHENTICATED=1 states
+ * that a gateway, or a replacement here, authenticates every request.
  *
- * @param {string} token
+ * @param {string | null} token
  * @param {Set<string>} tokens
+ * @param {readonly Buffer[]} acceptedTokenDigests
  */
-function authorizeRequest(token, tokens) {
+function authorizeRequest(token, tokens, acceptedTokenDigests) {
   if (tokens.size === 0) return true;
-  return tokens.has(token);
+  if (token === null) return false;
+  // Digests, so both sides are 32 bytes: timingSafeEqual throws on a length
+  // mismatch, and a string compare settles a wrong-length guess sooner than a
+  // wrong-content one, leaking the secret's length. Compare yours this way.
+  const candidate = createHash('sha256').update(token).digest();
+  let accepted = false;
+  for (const digest of acceptedTokenDigests) {
+    // Always visit the complete list, so a match does not reveal its position
+    // through a shorter request-authentication path.
+    accepted = timingSafeEqual(candidate, digest) || accepted;
+  }
+  return accepted;
 }
 
 function validateTokenSet(tokens) {
@@ -145,6 +162,14 @@ export function createAiProxy({
     throw new TypeError('createAiProxy: provider must be openai, anthropic or none.');
   }
   validateTokenSet(tokens);
+  // Tokens are static configuration. Hash them once at construction instead
+  // of doing synchronous SHA-256 work for every accepted token on every
+  // request. This also snapshots the validated set, so later caller mutation
+  // cannot inject an unvalidated credential into a running proxy.
+  const acceptedTokens = new Set(tokens);
+  const acceptedTokenDigests = [...acceptedTokens].map((token) =>
+    createHash('sha256').update(token).digest()
+  );
   if (
     typeof apiKey !== 'string' ||
     Buffer.byteLength(apiKey, 'utf8') > MAX_PROVIDER_KEY_BYTES ||
@@ -176,6 +201,10 @@ export function createAiProxy({
       throw new TypeError('createAiProxy: allowedOrigins must contain canonical HTTP(S) origins.');
     }
   }
+  // Origins are static configuration too. Keep the validated snapshot rather
+  // than the caller-owned Set, whose later mutation could otherwise widen the
+  // browser trust boundary with a value that never passed validation.
+  const acceptedOrigins = new Set(allowedOrigins);
   if (
     !Number.isSafeInteger(requestTimeoutMs) ||
     requestTimeoutMs < 1 ||
@@ -195,7 +224,7 @@ export function createAiProxy({
   }
   /** @param {string | undefined} origin */
   function corsHeaders(origin) {
-    if (origin === undefined || !allowedOrigins.has(origin)) return {};
+    if (origin === undefined || !acceptedOrigins.has(origin)) return {};
     // Reflect only origins from the allow list, never '*': the responses
     // are per-user and the request carries credentials. retry-after is not
     // CORS-safelisted, so it must be exposed for the editor's backoff to
@@ -312,7 +341,10 @@ export function createAiProxy({
       }
 
       const token = bearerToken(req);
-      if (tokens.size > 0 && (token === null || !(await authorizeRequest(token, tokens)))) {
+      // Literal true only, as on the collaboration server: a replacement that
+      // returns a response object or a non-empty string by accident must not
+      // read as consent.
+      if ((await authorizeRequest(token, acceptedTokens, acceptedTokenDigests)) !== true) {
         // RFC 6750 requires WWW-Authenticate alongside a bearer 401.
         json(
           res,
@@ -320,6 +352,16 @@ export function createAiProxy({
           { ...cors, 'www-authenticate': 'Bearer' },
           { error: 'Missing or invalid bearer token' }
         );
+        return;
+      }
+
+      // The shipped Authorization header forces a CORS preflight on its own,
+      // but gateway mode or replacement auth may omit it. In those setups,
+      // text/plain, a form encoding or no type leaves the POST CORS-simple and
+      // able to reach the upstream without an origin check. Requiring JSON
+      // closes that path. Parameters follow the media type.
+      if (!JSON_CONTENT_TYPE.test(req.headers['content-type'] ?? '')) {
+        json(res, 415, cors, { error: 'Content-Type must be application/json' });
         return;
       }
 
@@ -402,20 +444,18 @@ export function createAiProxy({
       try {
         // Chunk-by-chunk relay with backpressure; buffering the whole reply
         // would defeat streaming, which is the point of the endpoint.
-        await new Promise((resolve, reject) => {
-          const stream = Readable.fromWeb(upstream.body);
-          stream.pipe(res);
-          stream.on('error', reject);
-          res.on('finish', resolve);
-          res.on('close', resolve);
-        });
+        // pipeline, not pipe: a failed write to the response is emitted, not
+        // thrown, and pipe re-emits on a destination nobody listens on, so
+        // one reader's broken socket takes the process down with every other
+        // user's stream.
+        await pipeline(Readable.fromWeb(upstream.body), res);
       } finally {
         clearTimeout(timeout);
         // A relay that failed mid-body must NOT be finished politely:
         // end() writes the chunked terminator, which presents the
         // truncated reply as complete. Dropping the socket lets the client
         // see the cut and surface or retry it. Clean completions never get
-        // here with an open stream (pipe already ended the response).
+        // here with an open stream (pipeline already ended the response).
         if (!res.writableEnded) res.destroy();
       }
     })().catch((error) => {

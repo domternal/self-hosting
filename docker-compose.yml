@@ -9,6 +9,11 @@
 # deliberately not wired here: it exists for setups where an authenticating
 # gateway fronts the proxy, and that gateway belongs in this file too. Remove
 # the ai_tokens secret and forward AI_ALLOW_UNAUTHENTICATED when you add it.
+#
+# Name a service to start only that one: `docker compose up --build
+# collab-server` is the collaboration-only deployment. Starting everything
+# without a real secrets/provider_api_key gives a proxy that refuses to start
+# and a restart policy that keeps retrying it.
 services:
   collab-server:
     build:
@@ -28,6 +33,13 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 256
+    # Nothing else bounds RSS: the frame and body ceilings are per message,
+    # and many documents at once are the residual risk. Size this against your
+    # own document count; over it the kernel kills the container (exit 137)
+    # and the restart policy brings it back, instead of the host swapping.
+    # Current Node reads this cgroup limit when sizing the default heap, so on
+    # a tight limit also pass --max-old-space-size.
+    mem_limit: 1g
     ports:
       # Websocket for HocuspocusProvider.
       - '127.0.0.1:${COLLAB_HOST_PORT:-1234}:1234'
@@ -87,6 +99,9 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 128
+    # Same reason as above, and the same starting point to size: the 1 MB body
+    # cap bounds one request, while concurrent streams are what accumulates.
+    mem_limit: 512m
     ports:
       - '127.0.0.1:${AI_HOST_PORT:-1250}:1250'
     environment:

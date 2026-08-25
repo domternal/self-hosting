@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -105,6 +105,52 @@ test(
 );
 
 test(
+  'restore never removes a pre-existing candidate path',
+  { skip: dependencyAvailable ? false : 'requires the registry-produced collab install' },
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'domternal-sqlite-candidate-'));
+    const live = join(directory, 'live.sqlite');
+    const source = join(directory, 'source.sqlite');
+    const timestamp = Date.parse('2026-08-20T12:34:56.789Z');
+    const RealDate = Date;
+    const candidate = `${live}.restore-${String(process.pid)}-${String(timestamp)}`;
+    try {
+      const { default: Database } = await import(pathToFileURL(sqliteEntry).href);
+      for (const [path, value] of [
+        [live, 'live'],
+        [source, 'replacement'],
+      ]) {
+        const database = new Database(path);
+        database.exec('CREATE TABLE probe(value TEXT)');
+        database.prepare('INSERT INTO probe VALUES (?)').run(value);
+        database.close();
+      }
+      writeFileSync(candidate, 'operator-owned candidate');
+      globalThis.Date = class extends RealDate {
+        constructor(...args) {
+          super(...(args.length === 0 ? [timestamp] : args));
+        }
+
+        static now() {
+          return timestamp;
+        }
+      };
+      const { restoreDatabase } = await import(pathToFileURL(maintenancePath).href);
+      process.env.COLLAB_MAINTENANCE_OFFLINE = '1';
+      await assert.rejects(restoreDatabase(source, live), /Refusing to overwrite existing backup/u);
+      assert.equal(readFileSync(candidate, 'utf8'), 'operator-owned candidate');
+      const unchanged = new Database(live, { readonly: true });
+      assert.equal(unchanged.prepare('SELECT value FROM probe').pluck().get(), 'live');
+      unchanged.close();
+    } finally {
+      globalThis.Date = RealDate;
+      delete process.env.COLLAB_MAINTENANCE_OFFLINE;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
   'restore never overwrites a pre-existing rollback path',
   { skip: dependencyAvailable ? false : 'requires the registry-produced collab install' },
   async () => {
@@ -144,6 +190,112 @@ test(
       const unchanged = new Database(live, { readonly: true });
       assert.equal(unchanged.prepare('SELECT value FROM probe').pluck().get(), 'live');
       unchanged.close();
+    } finally {
+      globalThis.Date = RealDate;
+      delete process.env.COLLAB_MAINTENANCE_OFFLINE;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  'a post-rollback restore failure names and preserves the verified rollback',
+  { skip: dependencyAvailable ? false : 'requires the registry-produced collab install' },
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'domternal-sqlite-rollback-failure-'));
+    const live = join(directory, 'live.sqlite');
+    const source = join(directory, 'source.sqlite');
+    const timestamp = Date.parse('2026-08-22T12:34:56.789Z');
+    const RealDate = Date;
+    const rollback = `${live}.before-restore-2026-08-22T12-34-56.789Z-${String(process.pid)}`;
+    const candidate = `${live}.restore-${String(process.pid)}-${String(timestamp)}`;
+    try {
+      const { default: Database } = await import(pathToFileURL(sqliteEntry).href);
+      for (const [path, value] of [
+        [live, 'live'],
+        [source, 'replacement'],
+      ]) {
+        const database = new Database(path);
+        database.exec('CREATE TABLE probe(value TEXT)');
+        database.prepare('INSERT INTO probe VALUES (?)').run(value);
+        database.close();
+      }
+      // backupDatabase can read a rollback-journal database without this path,
+      // but the restore's sidecar cleanup must reject a directory. That places
+      // the failure deterministically after the verified rollback was created
+      // and before the candidate replaces the live database.
+      mkdirSync(`${live}-shm`);
+      globalThis.Date = class extends RealDate {
+        constructor(...args) {
+          super(...(args.length === 0 ? [timestamp] : args));
+        }
+
+        static now() {
+          return timestamp;
+        }
+      };
+      const { restoreDatabase } = await import(pathToFileURL(maintenancePath).href);
+      process.env.COLLAB_MAINTENANCE_OFFLINE = '1';
+      await assert.rejects(
+        restoreDatabase(source, live),
+        (error) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /Restore failed after the rollback copy was created/u);
+          assert.match(error.message, /Previous database preserved at /u);
+          assert.ok(error.message.includes(rollback));
+          assert.ok(error.cause instanceof Error);
+          return true;
+        }
+      );
+      assert.equal(existsSync(rollback), true);
+      assert.equal(existsSync(candidate), false);
+      const previous = new Database(rollback, { readonly: true });
+      assert.equal(previous.prepare('SELECT value FROM probe').pluck().get(), 'live');
+      previous.close();
+      const unchanged = new Database(live, { readonly: true });
+      assert.equal(unchanged.prepare('SELECT value FROM probe').pluck().get(), 'live');
+      unchanged.close();
+    } finally {
+      globalThis.Date = RealDate;
+      delete process.env.COLLAB_MAINTENANCE_OFFLINE;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  'restoring a new target never reports an unrelated rollback-shaped file',
+  { skip: dependencyAvailable ? false : 'requires the registry-produced collab install' },
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'domternal-sqlite-new-target-'));
+    const target = join(directory, 'new.sqlite');
+    const source = join(directory, 'source.sqlite');
+    const timestamp = Date.parse('2026-08-23T12:34:56.789Z');
+    const RealDate = Date;
+    const unrelated = `${target}.before-restore-2026-08-23T12-34-56.789Z-${String(process.pid)}`;
+    try {
+      const { default: Database } = await import(pathToFileURL(sqliteEntry).href);
+      const database = new Database(source);
+      database.exec('CREATE TABLE probe(value TEXT)');
+      database.prepare('INSERT INTO probe VALUES (?)').run('replacement');
+      database.close();
+      writeFileSync(unrelated, 'not created by this restore');
+      globalThis.Date = class extends RealDate {
+        constructor(...args) {
+          super(...(args.length === 0 ? [timestamp] : args));
+        }
+
+        static now() {
+          return timestamp;
+        }
+      };
+      const { restoreDatabase } = await import(pathToFileURL(maintenancePath).href);
+      process.env.COLLAB_MAINTENANCE_OFFLINE = '1';
+      assert.equal(await restoreDatabase(source, target), null);
+      assert.equal(readFileSync(unrelated, 'utf8'), 'not created by this restore');
+      const restored = new Database(target, { readonly: true });
+      assert.equal(restored.prepare('SELECT value FROM probe').pluck().get(), 'replacement');
+      restored.close();
     } finally {
       globalThis.Date = RealDate;
       delete process.env.COLLAB_MAINTENANCE_OFFLINE;

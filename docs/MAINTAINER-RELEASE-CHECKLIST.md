@@ -3,42 +3,29 @@
 This public template consumes published packages; it must never smuggle private
 workspace links or tarballs into a user-facing deployment.
 
-## Mirror ownership
-
-The shared runtime and behavior originate in
-`domternal-pro/examples/self-hosting/`, where they are implemented and tested
-first. This repository is their standalone user distribution, not a second
-independent implementation. Do not make a permanent shared-source fix only
-here: port it to the Pro example first, then copy the shared file back to the
-same relative public path byte-for-byte.
-
-Some files intentionally remain different. Paired variants preserve the same
-behavior while translating the Pro pnpm workspace build into this repository's
-exact published-package npm install. Public-only CI, lock, policy and release
-files remain owned here; Pro-only workspace deploy files remain in Pro. The
-normative path classes and reasons are in the Pro
-`tests/third-party-notices/mirror-policy.mjs`, with the full workflow in its
-README under "Self-hosting source of truth and public mirror."
-
-The Pro mirror checker detects drift but never copies, rewrites, classifies or
-repairs a file. After a coordinated local sync, update and review the v4 hash
-manifest from the Pro checkout, run both repositories' checks, and land the
-public commit before the matching Pro commit because hosted Pro CI compares
-against public `main`.
-
 ## Blocking release order
 
 At the time this hardening was prepared, these exact public packages were not
 yet available from npm:
 
-- `@domternal-pro/core@0.1.0`
-- `@domternal-pro/extension-comments@0.1.0`
+- `@domternal-pro/core@1.0.0`
+- `@domternal-pro/extension-comments@1.0.0`
 
 That is the single intentional external blocker. Until both exist, do not invent
-`collab-server/package-lock.json`, copy a Pro workspace lock, vendor private
-tarballs, weaken `npm ci`, or claim that Docker/E2E passed. The dependency-free
-policy and syntax suite remains valid; the `dependency-lock` CI job explains and
-fails at this boundary.
+`collab-server/package-lock.json`, vendor private tarballs, weaken `npm ci`, or
+claim that Docker/E2E passed. The dependency-free policy and syntax suite
+remains valid. The `dependency-lock` and `containers` CI jobs report as skipped
+only while at least one exact Pro release is unavailable and the lock has never
+existed in reachable default-branch or prior-push history. The static job fails
+closed if either history or public-registry status cannot be verified. Once
+both releases are public, a missing lock fails CI even if reachable history was
+rewritten.
+
+Before publishing, protect the default branch with a ruleset that disallows
+force pushes and restricts bypass permission to the smallest practical
+maintainer group. CI also checks prior-push history and exact public npm release
+status, but repository protection prevents destructive history rewrites at the
+source.
 
 After publishing both packages:
 
@@ -79,18 +66,16 @@ After publishing both packages:
   policy to every runtime.
 - CI builds and scans but contains no registry login, image push, npm publish or
   release command.
-- The public/Pro mirror policy classifies every path explicitly and all truly
-  shared source remains byte-identical.
 - Restore is tested from a consistent backup and proves the automatic rollback
   retains committed WAL data.
 - Documentation names any remaining limitation honestly.
 
-## GitHub repository setup
+## Settings for the repository you run this in
 
-- Enable the repository's template setting so the README's `Use this template`
-  instruction matches GitHub's interface. Keep Issues enabled only as a routed
-  chooser: blank reports stay disabled and every public contact link leads to
-  the central tracker, documentation or private security policy.
+- Keep the repository marked as a GitHub template, since the README opens by
+  telling readers to start from it, and keep Issues enabled: the checked-in
+  chooser carries no blank form and routes reports to the central tracker, so
+  disabling Issues removes the routing rather than the noise.
 - Enable private vulnerability reporting, Dependency graph, Dependabot alerts,
   Dependabot malware alerts, Secret Protection and push protection. Keep
   Dependabot security updates, grouped security updates and every rule that
@@ -99,17 +84,14 @@ After publishing both packages:
 - Keep GitHub CodeQL default setup disabled. This repository commits an
   advanced CodeQL workflow, and GitHub rejects advanced SARIF uploads while
   default setup is enabled.
-- While the repository is private, confirm that the organization plan enables
-  code scanning, dependency review and the `ubuntu-24.04-arm` runner. These
-  capabilities are generally available once the repository is public, but a
-  required check must not be configured until it has produced a real success.
-- After each check has produced a real success, initially require
+- Require a check only after it has produced a real success, because GitHub
+  offers a check name only after it has run once. Start with
   `CI / Static policy and syntax`, `CodeQL / JavaScript analysis` and
-  `Dependency review / dependency-review` for `main`. When the public Pro
-  packages and registry lock exist, also require
+  `Dependency review / dependency-review`. Once the registry lock is committed
+  and the lock-dependent jobs stop skipping, also require
   `CI / Frozen npm dependency and provenance gates`, `CI / Containers (amd64)`
-  and `CI / Containers (arm64)`. Keep merge-queue checks required when merge
-  queue is enabled; GitHub only offers a check name after it has run once.
+  and `CI / Containers (arm64)`. Code scanning, dependency review and the
+  `ubuntu-24.04-arm` runner depend on your plan and repository visibility.
 - Keep Actions workflow permissions read-only by default. Checkout steps must
   set `persist-credentials: false`; only the CodeQL analysis job receives
   `security-events: write` for its SARIF upload.

@@ -1,8 +1,8 @@
 export const EXACT_RUNTIME_DEPENDENCIES = Object.freeze({
-  '@domternal-pro/core': '0.1.0',
-  '@domternal-pro/extension-comments': '0.1.0',
-  '@domternal/core': '0.15.0',
-  '@domternal/pm': '0.15.0',
+  '@domternal-pro/core': '1.0.0',
+  '@domternal-pro/extension-comments': '1.0.0',
+  '@domternal/core': '1.0.1',
+  '@domternal/pm': '1.0.1',
   '@hocuspocus/extension-sqlite': '4.6.0',
   '@hocuspocus/server': '4.6.0',
   'better-sqlite3': '12.11.1',
