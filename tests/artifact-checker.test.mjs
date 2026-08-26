@@ -63,18 +63,13 @@ function fixture() {
     const packageRoot = join(root, 'node_modules', ...name.split('/'));
     json(join(packageRoot, 'package.json'), { name, version });
   }
-  for (const name of ['@domternal-pro/core', '@domternal-pro/extension-comments']) {
-    const packageRoot = join(root, 'node_modules', ...name.split('/'));
-    write(join(packageRoot, 'LICENSE.md'), 'commercial fixture\n');
-    write(join(packageRoot, 'THIRD-PARTY-LICENSES.md'), 'notices fixture\n');
-  }
   const sqliteRoot = join(root, 'node_modules', 'better-sqlite3');
   json(join(sqliteRoot, 'package.json'), { name: 'better-sqlite3', version: '12.11.1' });
   write(join(sqliteRoot, 'build', 'Release', 'better_sqlite3.node'), 'fixture');
   return root;
 }
 
-test('accepts an exact, self-contained runtime with native SQLite and legal files', () => {
+test('accepts an exact, self-contained MIT runtime with native SQLite', () => {
   const root = fixture();
   try {
     assert.deepEqual(runtimeArtifactProblems(root), []);
@@ -83,35 +78,16 @@ test('accepts an exact, self-contained runtime with native SQLite and legal file
   }
 });
 
-test('rejects a missing commercial notice and native binding', () => {
+test('rejects a missing local GC source and native binding', () => {
   const root = fixture();
   try {
-    rmSync(
-      join(root, 'node_modules', '@domternal-pro', 'extension-comments', 'THIRD-PARTY-LICENSES.md')
-    );
+    rmSync(join(root, 'src', 'thread-gc.mjs'));
     rmSync(join(root, 'node_modules', 'better-sqlite3', 'build'), { recursive: true });
     const problems = runtimeArtifactProblems(root);
-    assert.ok(problems.some((problem) => problem.includes('THIRD-PARTY-LICENSES.md')));
+    assert.ok(problems.some((problem) => problem.includes('src/thread-gc.mjs')));
     assert.ok(problems.some((problem) => problem.includes('no compiled .node binding')));
   } finally {
     rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('rejects an empty commercial license artifact', () => {
-  const directory = fixture();
-  try {
-    writeFileSync(
-      join(directory, 'node_modules', '@domternal-pro', 'core', 'LICENSE.md'),
-      ''
-    );
-    assert.ok(
-      runtimeArtifactProblems(directory).some((problem) =>
-        problem.includes('@domternal-pro/core/LICENSE.md is empty')
-      )
-    );
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -119,16 +95,16 @@ test('rejects a dependency symlink that escapes deployed node_modules', () => {
   const root = fixture();
   const outside = mkdtempSync(join(tmpdir(), 'domternal-artifacts-outside-'));
   try {
-    const packageRoot = join(root, 'node_modules', '@domternal', 'core');
+    const packageRoot = join(root, 'node_modules', 'yjs');
     rmSync(packageRoot, { recursive: true });
     json(join(outside, 'package.json'), {
-      name: '@domternal/core',
-      version: EXACT_RUNTIME_DEPENDENCIES['@domternal/core'],
+      name: 'yjs',
+      version: EXACT_RUNTIME_DEPENDENCIES.yjs,
     });
     symlinkSync(outside, packageRoot, 'dir');
     assert.ok(
       runtimeArtifactProblems(root).some((problem) =>
-        problem.includes('@domternal/core is not a real package directory')
+        problem.includes('yjs is not a real package directory')
       )
     );
   } finally {

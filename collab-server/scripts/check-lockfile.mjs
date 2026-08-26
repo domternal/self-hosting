@@ -6,13 +6,6 @@ import { EXACT_RUNTIME_DEPENDENCIES } from './runtime-dependencies.mjs';
 
 const PUBLIC_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 
-// The coordinates an operator has to publish are read out of the frozen map
-// instead of written down again: a second copy drifts silently, and the version
-// in the message is the one every gate here actually enforces.
-export const COMMERCIAL_RELEASES = Object.entries(EXACT_RUNTIME_DEPENDENCIES)
-  .filter(([name]) => name.startsWith('@domternal-pro/'))
-  .map(([name, version]) => `${name}@${version}`);
-
 function hasSha512Integrity(value) {
   if (typeof value !== 'string') return false;
   const match = value.match(/^sha512-([A-Za-z0-9+/]+={0,2})$/u);
@@ -96,9 +89,7 @@ export function lockfileProblems(lock) {
 export function readLockfileProblems(runtimeRoot) {
   const path = resolve(runtimeRoot, 'package-lock.json');
   if (!existsSync(path)) {
-    return [
-      `${path} is missing; publish ${COMMERCIAL_RELEASES.join(' and ')}, then generate the real public-registry lock (never fabricate or vendor it)`,
-    ];
+    return [`${path} is missing; generate and commit the real public-registry lock`];
   }
   let lock;
   try {
