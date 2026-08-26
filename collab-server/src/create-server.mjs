@@ -3,13 +3,13 @@
 // tests, or a managed multi-tenant deployment.
 import { Server } from '@hocuspocus/server';
 import { SQLite } from '@hocuspocus/extension-sqlite';
-import { collectThreadGarbage } from '@domternal-pro/extension-comments/yjs';
 import * as Y from 'yjs';
 import { documentNameError } from './document-name.mjs';
+import { createThreadGarbageCollector } from './thread-gc.mjs';
 import { createWebhookNotifier } from './webhook.mjs';
 
-// Matches DEFAULT_COLLAB_FIELD in @domternal-pro/extension-collaboration (the
-// Collaboration extension's `field` default). If you change one side, change
+// Matches DEFAULT_COLLAB_FIELD in the Domternal Pro Collaboration extension
+// (the extension's `field` default). If you change one side, change
 // the other, and pass it explicitly to y-prosemirror helpers such as
 // prosemirrorJSONToYDoc, whose own default is 'prosemirror'.
 const COLLAB_FIELD = 'default';
@@ -97,6 +97,7 @@ export function createCollabServer({
     );
   }
   const notify = webhook ? createWebhookNotifier({ ...webhook, quiet }) : null;
+  const collectThreadGarbage = createThreadGarbageCollector();
 
   // Yjs updates applied to each live document since its last real store.
   // Closing a direct connection forces an IMMEDIATE store cycle that
@@ -358,7 +359,7 @@ export function createCollabServer({
       // seconds later. Skipping the sweep for reads would instead leave
       // tombstones in place forever on documents that are only ever read.
       try {
-        collectThreadGarbage(document.getMap(COMMENTS_MAP));
+        collectThreadGarbage(document.getMap(COMMENTS_MAP), { scope: documentName });
       } catch (error) {
         console.error(`[collab] comment garbage collection failed for "${documentName}":`, error);
       }
