@@ -57,10 +57,8 @@ docker compose \
   config --quiet
 ```
 
-When the public registry lock exists, also run the frozen install, artifact,
-Docker and container checks described in
+Also run the frozen install, artifact, Docker and container checks described in
 [`docs/MAINTAINER-RELEASE-CHECKLIST.md`](./docs/MAINTAINER-RELEASE-CHECKLIST.md).
 
 Contributions to MIT-licensed files are submitted under this repository's MIT
-license. Installed `@domternal-pro` packages retain their separate commercial
-license.
+license. Neither reference server installs or imports a Domternal Pro package.
