@@ -25,12 +25,6 @@ That is a generic relay: fine for trying the editor, not for production. It does
 
 Use this repository as a GitHub template (or clone it), then set up each service.
 
-One thing to know before the first command: this revision does not carry
-`collab-server/package-lock.json`, because that lock can only be produced once
-the exact Domternal Pro packages it resolves are on the public registry. Until
-it ships, the `npm ci` below and the collaboration image build both stop with a
-message saying so, while everything else in this repository works as described.
-
 The collaboration server, with the full walkthrough in [`collab-server/README.md`](./collab-server/README.md):
 
 ```bash
