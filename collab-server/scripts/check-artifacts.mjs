@@ -220,6 +220,7 @@ export function runtimeArtifactProblems(runtimeRoot) {
     'src/document-name.mjs',
     'src/rest.mjs',
     'src/secret-setting.mjs',
+    'src/thread-gc.mjs',
     'src/webhook.mjs',
     'scripts/check-artifacts.mjs',
     'scripts/check-lockfile.mjs',
