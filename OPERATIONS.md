@@ -202,12 +202,11 @@ and an unwritable data directory among them, fire in every environment.
 
 Build:
 
-- `[dependency-lock] FAILED: ... package-lock.json is missing; publish
-  @domternal-pro/core@1.0.0 and @domternal-pro/extension-comments@1.0.0, then
-  generate the real public-registry lock (never fabricate or vendor it)`: the
-  image build checks the committed lock before installing anything. The lock is
-  a deployment artifact, not a local file: generate it from the public registry
-  once those releases exist, and never hand-write or vendor one.
+- `[dependency-lock] FAILED: ... package-lock.json is missing`: the image build
+  checks the committed lock before installing anything. Restore the reviewed
+  lock from version control, or regenerate it from the exact public manifest
+  with the supported Node/npm version and review the full diff. Never hand-write
+  or vendor a lock.
 - `set UPSTREAM_URL to your provider endpoint`: Compose refuses before any
   container starts, because `docker-compose.yml` marks that variable required.
   It comes from the root `.env`, which `.env.example` already fills in.
