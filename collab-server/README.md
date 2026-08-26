@@ -1,6 +1,6 @@
 # Reference collaboration server
 
-A minimal, production-shaped [Hocuspocus](https://hocuspocus.dev) v4 server for Domternal Pro. One server backs three features: real-time collaboration syncs through it, [version history](https://domternal.dev/v1/pro/version-history/) keeps its snapshots on it in sibling documents, and comment threads live inside the documents it persists, which is what makes them shared between users and durable (locally, [comments](https://domternal.dev/v1/pro/comments/) also work with no server at all). Copy it into your project and adapt the marked spots. Infrastructure-specific policy is isolated in the token lookup in `src/create-server.mjs`, the one `authorizeDocument` callback in `index.mjs` shared by websocket and REST, and the persistence extension.
+A minimal, production-shaped [Hocuspocus](https://hocuspocus.dev) v4 server for Domternal Pro. One server backs three features: real-time collaboration syncs through it, [version history](https://domternal.dev/v1/pro/version-history/) keeps its snapshots on it in sibling documents, and comment threads live inside the documents it persists, which is what makes them shared between users and durable (locally, [comments](https://domternal.dev/v1/pro/comments/) also work with no server at all). Copy it into your project and adapt the marked spots. Infrastructure-specific policy is isolated in the token lookup in `src/create-server.mjs`, the one `authorizeDocument` callback in `index.mjs` shared by websocket and REST, and the persistence extension. This MIT server has no Domternal Pro package dependency and does not need, read or validate a Domternal Pro license key.
 
 What it does:
 
@@ -33,12 +33,10 @@ npm start
 ```
 
 Use Node 22.23.2. In this repository, `nvm use` at the root selects it; after
-copying only this directory, select 22.23.2 with your own version manager. A
-released revision installs `@domternal-pro/extension-comments` from
-the public npm registry. This hardening checkout deliberately remains blocked
-until both exact Pro packages are published and the real registry lock is
-committed; see the maintainer release checklist rather than substituting a
-workspace or private tarball. `npm start` forces `NODE_ENV=production` after
+copying only this directory, select 22.23.2 with your own version manager. The
+comment-thread collector is local MIT source in `src/thread-gc.mjs`; the server
+has no runtime or development dependency on a Domternal Pro package. `npm
+start` forces `NODE_ENV=production` after
 loading `.env`, so an inherited development setting cannot weaken the guards.
 Placeholder or weak secrets, and the shipped starter authorization policy while
 its marker is still in `index.mjs`, fail before listeners start.
