@@ -666,7 +666,7 @@ async function exerciseCollab() {
     'collab-server',
     'sh',
     '-ec',
-    "test -f /app/node_modules/@domternal-pro/core/LICENSE.md && test -f /app/node_modules/@domternal-pro/core/THIRD-PARTY-LICENSES.md && test -f /app/node_modules/@domternal-pro/extension-comments/LICENSE.md && test -f /app/node_modules/@domternal-pro/extension-comments/THIRD-PARTY-LICENSES.md",
+    "test -f /app/LICENSE && test -z \"$(find /app/node_modules -mindepth 1 -maxdepth 1 -type d -name '@domternal*' -print -quit)\"",
   ]);
 }
 
