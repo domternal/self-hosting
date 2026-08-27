@@ -2,11 +2,11 @@
 
 ## Scope
 
-This policy covers the reference servers in this repository (the
-collaboration server and the AI proxy) and the `@domternal-pro/*` packages
-they install. If you copied this repository as a template for your own
-deployment, replace this file with your deployment's own reporting channel:
-Domternal cannot fix or even see your fork.
+This policy covers the MIT reference servers in this repository (the
+collaboration server and the AI proxy) and their third-party dependencies.
+Neither server installs a Domternal Pro package. If you copied this repository
+as a template for your own deployment, replace this file with your deployment's
+own reporting channel: Domternal cannot fix or even see your fork.
 
 ## Reporting a Vulnerability
 
