@@ -1,6 +1,6 @@
 # Reference AI proxy
 
-A zero-dependency streaming proxy for the Domternal Pro [AI assistant](https://domternal.dev/v1/pro/ai/). The editor calls this endpoint, and this endpoint holds the provider key and forwards the stream. That is the whole job, and it is the recommended production setup: an API key shipped to arbitrary users' browsers is compromised by definition, and several providers reject browser calls outright.
+A zero-dependency streaming proxy for the Domternal Pro [AI assistant](https://domternal.dev/v1/pro/ai/). The editor calls this endpoint, and this endpoint holds the provider key and forwards the stream. That is the whole job, and it is the recommended production setup: an API key shipped to arbitrary users' browsers is compromised by definition, and several providers reject browser calls outright. This MIT server has no Domternal Pro package dependency and does not need, read or validate a Domternal Pro license key.
 
 What it does:
 

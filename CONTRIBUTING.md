@@ -18,18 +18,19 @@ for defects and link that issue from a pull request when one exists.
 
 ## Source-of-truth workflow
 
-The shared runtime and behavior originate in the private Pro example at
-`domternal-pro/examples/self-hosting/`. This repository is the reviewed public
-distribution. External contributors do not need access to the Pro repository:
-describe the desired behavior and provide a focused public reproduction, and a
-maintainer will coordinate any required Pro-first implementation and mirror
-sync.
+This public MIT repository is the canonical runnable source for the shared
+self-hosting runtime. The private Pro repository keeps an integration mirror at
+`domternal-pro/examples/self-hosting/` so the same runtime is exercised by Pro
+release and end-to-end tests. Shared MIT runtime changes are reviewed here
+first, then synchronized into that mirror and checked by the byte-parity and
+commercial-boundary gates. Neither copy may acquire a Domternal Pro package,
+key, activation API or license environment dependency.
 
-Do not be surprised if a maintainer recreates or resynchronizes a shared-source
-change before merging it here. That preserves the tested Pro source of truth
-without losing the contribution or its attribution. Public-only CI,
-documentation and packaging changes can be reviewed directly in this
-repository.
+The two repositories intentionally use different standalone and workspace
+packaging. A Pro-only build or test overlay is permitted only where the mirror
+policy classifies and documents it explicitly; it must not change the shared
+runtime behavior. Public-only CI, documentation and packaging changes can be
+reviewed directly in this repository.
 
 This coordination rule applies to upstream contributions. Once you generate
 your own repository from this template, your fork belongs to you and may be
@@ -56,10 +57,8 @@ docker compose \
   config --quiet
 ```
 
-When the public registry lock exists, also run the frozen install, artifact,
-Docker and container checks described in
+Also run the frozen install, artifact, Docker and container checks described in
 [`docs/MAINTAINER-RELEASE-CHECKLIST.md`](./docs/MAINTAINER-RELEASE-CHECKLIST.md).
 
 Contributions to MIT-licensed files are submitted under this repository's MIT
-license. Installed `@domternal-pro` packages retain their separate commercial
-license.
+license. Neither reference server installs or imports a Domternal Pro package.

@@ -16,8 +16,8 @@ ENV npm_config_build_from_source=true \
 
 # npm ci refuses manifest/lock drift and never rewrites the committed lock.
 # The cache mount speeds rebuilds without copying npm's cache into the image.
-# The glob lets the policy checker print the intentional release-order blocker
-# when the lock is absent; default-deny .dockerignore admits no other match.
+# The package glob copies the manifest and its mandatory lock together;
+# default-deny .dockerignore admits no other match.
 COPY package*.json LICENSE ./
 COPY scripts/check-artifacts.mjs scripts/check-lockfile.mjs scripts/runtime-dependencies.mjs scripts/sqlite-maintenance.mjs ./scripts/
 RUN node scripts/check-lockfile.mjs /app

@@ -13,8 +13,6 @@ import { EXACT_RUNTIME_DEPENDENCIES } from './runtime-dependencies.mjs';
 
 export { EXACT_RUNTIME_DEPENDENCIES } from './runtime-dependencies.mjs';
 
-const COMMERCIAL_PACKAGES = ['@domternal-pro/core', '@domternal-pro/extension-comments'];
-
 function readJson(path, problems) {
   try {
     return JSON.parse(readFileSync(path, 'utf8'));
@@ -76,7 +74,7 @@ function findNativeModules(root) {
 /**
  * Validate the files that are actually deployed, not merely the source
  * manifest. npm's frozen lock provides transitive integrity; this checker
- * additionally proves the exact direct closure, commercial notices and the
+ * additionally proves the exact direct closure and the
  * Alpine-native SQLite binding survived the multi-stage copy.
  */
 export function runtimeArtifactProblems(runtimeRoot) {
@@ -175,18 +173,6 @@ export function runtimeArtifactProblems(runtimeRoot) {
       }
     }
 
-    for (const name of COMMERCIAL_PACKAGES) {
-      const rootForPackage = packagePath(nodeModules, name);
-      for (const legalFile of ['LICENSE.md', 'THIRD-PARTY-LICENSES.md']) {
-        requireRegularFileWithin(
-          rootForPackage,
-          join(rootForPackage, legalFile),
-          `${name}/${legalFile}`,
-          problems
-        );
-      }
-    }
-
     const sqliteRoot = packagePath(nodeModules, 'better-sqlite3');
     const sqliteManifest = readJson(join(sqliteRoot, 'package.json'), problems);
     if (sqliteManifest !== null && sqliteManifest.name !== 'better-sqlite3') {
@@ -220,6 +206,7 @@ export function runtimeArtifactProblems(runtimeRoot) {
     'src/document-name.mjs',
     'src/rest.mjs',
     'src/secret-setting.mjs',
+    'src/thread-gc.mjs',
     'src/webhook.mjs',
     'scripts/check-artifacts.mjs',
     'scripts/check-lockfile.mjs',
@@ -265,7 +252,7 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  console.log('[collab-artifacts] OK - frozen runtime, native binding and legal files verified');
+  console.log('[collab-artifacts] OK - frozen MIT runtime and native binding verified');
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {

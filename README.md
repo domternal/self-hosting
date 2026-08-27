@@ -1,6 +1,6 @@
 # Domternal self-hosting
 
-Reference backends for [Domternal Pro](https://domternal.dev/pro/): the parts that run on **your** infrastructure. Domternal hosts nothing, so nothing ever passes through our servers: documents and comments live where you deploy them, and AI prompts go from your backend straight to the provider you choose, under your own contract (or to a local model, and then nothing leaves at all). These are the two services that make that work, ready to copy and adapt.
+Reference backends for [Domternal Pro](https://domternal.dev/pro/): the parts that run on **your** infrastructure. Domternal does not provide a hosted instance of these reference services for your Application. In a deployment of this source, documents and comments live where you deploy them, and AI prompts go from your backend straight to the provider you choose, under your own contract (or to a local model, and then nothing leaves at all). Traffic reaches only the endpoints your host explicitly configures. The separate Domternal-operated website demo is governed by the published [Privacy Policy](https://domternal.dev/privacy/). These are the two services that make customer-controlled hosting work, ready to copy and adapt.
 
 | Directory | What it is | You need it for |
 | --- | --- | --- |
@@ -24,12 +24,6 @@ That is a generic relay: fine for trying the editor, not for production. It does
 ## Quick start
 
 Use this repository as a GitHub template (or clone it), then set up each service.
-
-One thing to know before the first command: this revision does not carry
-`collab-server/package-lock.json`, because that lock can only be produced once
-the exact Domternal Pro packages it resolves are on the public registry. Until
-it ships, the `npm ci` below and the collaboration image build both stop with a
-message saying so, while everything else in this repository works as described.
 
 The collaboration server, with the full walkthrough in [`collab-server/README.md`](./collab-server/README.md):
 
@@ -198,15 +192,14 @@ budget.
 
 ## Support, contributions and license
 
-This repository is MIT licensed and provided as is: it is a starting point you
-may copy and adapt under that license, not a managed product. The
-`@domternal-pro` packages it installs remain under the
-[Domternal Pro commercial license](https://domternal.dev/license/),
-and running them in production needs a license key. That key belongs to your
-application build, not to these servers: you pass it to `setLicenseKey` where
-your editor starts, and neither service here reads, stores or validates one.
+This repository and both server implementations are MIT licensed and provided
+as is: they are a starting point you may copy and adapt under that license, not
+a managed product. Neither server installs a Domternal Pro package, and neither
+server needs, reads, stores or validates a Domternal Pro license key. Commercial
+activation belongs only to the separate Domternal Pro editor packages in the
+application that imports them, including guarded headless use.
 [Installation and licensing](https://domternal.dev/v1/pro/licensing/) covers
-where it goes and how offline validation works. See [SUPPORT.md](./SUPPORT.md)
+browser and headless initialization and how offline validation works. See [SUPPORT.md](./SUPPORT.md)
 for help and defect reporting, [CONTRIBUTING.md](./CONTRIBUTING.md) before
 proposing a change, and [SECURITY.md](./SECURITY.md) for private vulnerability
 reporting.
