@@ -35,17 +35,11 @@ jobs:
     name: Static policy and syntax
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    outputs:
-      deployment-lock: ${{ steps.deployment-lock.outputs.present }}
     steps:
       - name: Checkout without persisting credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # The temporary missing-lock gate searches default-branch history.
-          # A shallow checkout could mistake a deletion for a lock that never
-          # existed and skip every dependency and container check.
-          fetch-depth: 0
 
       - name: Use the supported Node release
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -53,59 +47,8 @@ jobs:
           node-version: 22.23.2
           package-manager-cache: false
 
-      - name: Report whether the deployment lock exists yet
-        id: deployment-lock
-        # A job-level condition runs before any checkout, so a committed
-        # file's presence can only reach dependent jobs from a step that
-        # already has the tree. Absence may only mean "not published yet":
-        # once the lock is on the default branch, a revision without it
-        # removes every dependency, provenance and container gate at once, so
-        # that case fails here instead of reporting a green run.
-        env:
-          BEFORE_SHA: ${{ github.event.before || '' }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          lock_path=collab-server/package-lock.json
-          if [ -f "$lock_path" ]; then
-            printf 'present=true\n' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Absence is allowed only before the first registry lock reaches the
-          # default branch. Fetch failure is fatal because treating an unknown
-          # history as "never existed" would fail open. The push event's prior
-          # commit catches an immediate history rewrite. The public-registry
-          # check below remains authoritative after both releases are public,
-          # even if a later revision no longer has reachable lock history.
-          default_ref="refs/remotes/origin/$DEFAULT_BRANCH"
-          git fetch --force --no-tags origin \
-            "+refs/heads/$DEFAULT_BRANCH:$default_ref"
-
-          history_refs=("$default_ref")
-          if [ "$EVENT_NAME" = push ]; then
-            if [[ ! "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "The push event did not provide a valid prior commit SHA." >&2
-              exit 1
-            fi
-            if [ "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]; then
-              git fetch --force --no-tags origin "$BEFORE_SHA"
-              history_refs+=(FETCH_HEAD)
-            fi
-          fi
-
-          for history_ref in "${history_refs[@]}"; do
-            previous_lock_commit="$(git log -1 --format=%H "$history_ref" -- "$lock_path")"
-            if [ -n "$previous_lock_commit" ]; then
-              echo "$lock_path was committed previously but is absent from this revision." >&2
-              echo "Removing it disables the dependency, provenance and container gates; restore the lock." >&2
-              exit 1
-            fi
-          done
-
-          node scripts/require-lockfile.mjs --verify-unpublished-transition
-          printf 'present=false\n' >> "$GITHUB_OUTPUT"
+      - name: Require the committed deployment lock
+        run: node scripts/require-lockfile.mjs
 
       - name: Verify and run actionlint
         # actionlint has no first-party JavaScript action. Verify the published
@@ -125,7 +68,9 @@ jobs:
           "$RUNNER_TEMP/actionlint" -config-file "$RUNNER_TEMP/actionlint.yaml" -color
 
       - name: Run dependency-free policy, syntax and unit tests
-        run: node --test tests/*.test.mjs
+        run: |
+          node --test tests/*.test.mjs
+          node scripts/check-commercial-boundary.mjs
 
       - name: Validate both Compose models without starting containers
         run: |
@@ -139,12 +84,6 @@ jobs:
   dependency-lock:
     name: Frozen npm dependency and provenance gates
     needs: static-policy
-    # The lock cannot exist before the Pro packages publish, so this job and
-    # the containers job that needs it skip rather than fail: a permanently red
-    # run hides a real regression and no contributor can get a green one. Once
-    # the lock is committed every gate below runs unchanged, including the
-    # checker that rejects a fabricated lock.
-    if: needs.static-policy.outputs.deployment-lock == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -188,6 +127,10 @@ jobs:
       - name: Verify complete peer and production dependency closure
         working-directory: collab-server
         run: npm ls --omit=dev --all
+
+      - name: Exercise local thread garbage collection
+        working-directory: collab-server
+        run: npm test
 
       - name: Verify deployed artifacts, notices and native SQLite
         run: node collab-server/scripts/check-artifacts.mjs collab-server

@@ -238,73 +238,28 @@ test('required workflows cover main, pull requests and the merge queue', () => {
   );
 });
 
-test('the temporary deployment lock transition fails closed', () => {
+test('the deployment lock and commercial boundary gates fail closed', () => {
   assert.deepEqual(deploymentLockWorkflowProblems(ciWorkflow), []);
   const mutations = [
-    ['shallow history', ['          fetch-depth: 0', '          fetch-depth: 1']],
     ['supported Node release', ['          node-version: 22.23.2', '          node-version: 22.23.1']],
-    ['shell failure handling', ['set -euo pipefail', 'set -uo pipefail']],
     [
-      'default branch fetch failure',
+      'committed lock gate',
       [
-        '            "+refs/heads/$DEFAULT_BRANCH:$default_ref"',
-        '            "+refs/heads/$DEFAULT_BRANCH:$default_ref" || true',
-      ],
-    ],
-    ['default branch history', ['history_refs=("$default_ref")', 'history_refs=()']],
-    ['push event handling', ['if [ "$EVENT_NAME" = push ]; then', 'if false; then']],
-    [
-      'prior push revision fetch',
-      ['git fetch --force --no-tags origin "$BEFORE_SHA"', 'echo "$BEFORE_SHA"'],
-    ],
-    [
-      'historical path search',
-      [
-        'git log -1 --format=%H "$history_ref" -- "$lock_path"',
-        'git show "$history_ref:$lock_path"',
+        '        run: node scripts/require-lockfile.mjs',
+        '        run: echo skipped',
       ],
     ],
     [
-      'historical result condition',
-      ['if [ -n "$previous_lock_commit" ]; then', 'if [ -z "$previous_lock_commit" ]; then'],
+      'commercial boundary gate',
+      ['          node scripts/check-commercial-boundary.mjs', '          echo skipped'],
     ],
     [
-      'public release transition check',
-      [
-        'node scripts/require-lockfile.mjs --verify-unpublished-transition',
-        'node scripts/require-lockfile.mjs',
-      ],
+      'dependency ordering',
+      ['    needs: static-policy', '    needs: containers'],
     ],
     [
-      'suppressed public release transition check',
-      [
-        'node scripts/require-lockfile.mjs --verify-unpublished-transition',
-        'node scripts/require-lockfile.mjs --verify-unpublished-transition || echo ignored',
-      ],
-    ],
-    [
-      'early successful exit before public release verification',
-      [
-        '          node scripts/require-lockfile.mjs --verify-unpublished-transition',
-        [
-          '          exit 0',
-          '          node scripts/require-lockfile.mjs --verify-unpublished-transition',
-        ].join('\n'),
-      ],
-    ],
-    [
-      'job output binding',
-      [
-        '      deployment-lock: ${{ steps.deployment-lock.outputs.present }}',
-        "      deployment-lock: 'false'",
-      ],
-    ],
-    [
-      'dependency gate condition',
-      [
-        "    if: needs.static-policy.outputs.deployment-lock == 'true'",
-        "    if: needs.static-policy.outputs.deployment-lock != 'true'",
-      ],
+      'thread GC tests',
+      ['      - name: Exercise local thread garbage collection', '      - name: Skip local tests'],
     ],
     ['container dependency', ['      - dependency-lock', '      - static-policy']],
   ];
@@ -313,13 +268,21 @@ test('the temporary deployment lock transition fails closed', () => {
     assert.notEqual(changed, ciWorkflow, `${name} mutation must change the fixture`);
     assert.notDeepEqual(deploymentLockWorkflowProblems(changed), [], name);
   }
-  assert.notDeepEqual(
-    deploymentLockWorkflowProblems(
-      ciWorkflow.replace('        id: deployment-lock', '        id: deployment-lock\n        continue-on-error: true')
-    ),
-    []
-  );
   for (const [name, changed] of [
+    [
+      'optional lock output',
+      ciWorkflow.replace(
+        '    steps:\n',
+        "    outputs:\n      deployment-lock: 'false'\n    steps:\n"
+      ),
+    ],
+    [
+      'conditional dependency job',
+      ciWorkflow.replace(
+        '  dependency-lock:\n    name:',
+        "  dependency-lock:\n    if: needs.static-policy.result == 'success'\n    name:"
+      ),
+    ],
     [
       'dependency-lock job-level continue-on-error',
       ciWorkflow.replace(
