@@ -1,6 +1,6 @@
 # Domternal self-hosting
 
-Reference backends for [Domternal Pro](https://domternal.dev/pro/): the parts that run on **your** infrastructure. Domternal hosts nothing, so nothing ever passes through our servers: documents and comments live where you deploy them, and AI prompts go from your backend straight to the provider you choose, under your own contract (or to a local model, and then nothing leaves at all). These are the two services that make that work, ready to copy and adapt.
+Reference backends for [Domternal Pro](https://domternal.dev/pro/): the parts that run on **your** infrastructure. Domternal does not provide a hosted instance of these reference services for your Application. In a deployment of this source, documents and comments live where you deploy them, and AI prompts go from your backend straight to the provider you choose, under your own contract (or to a local model, and then nothing leaves at all). Traffic reaches only the endpoints your host explicitly configures. The separate Domternal-operated website demo is governed by the published [Privacy Policy](https://domternal.dev/privacy/). These are the two services that make customer-controlled hosting work, ready to copy and adapt.
 
 | Directory | What it is | You need it for |
 | --- | --- | --- |
