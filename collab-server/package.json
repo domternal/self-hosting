@@ -7,6 +7,7 @@
   "description": "Reference Hocuspocus server for Domternal Pro collaboration",
   "scripts": {
     "start": "node --env-file-if-exists=.env --input-type=module --eval \"process.env.NODE_ENV='production'; await import('./index.mjs')\"",
+    "test": "node --test tests/*.test.mjs && node ../scripts/check-commercial-boundary.mjs",
     "check:lock": "node scripts/check-lockfile.mjs .",
     "check:artifacts": "node scripts/check-artifacts.mjs .",
     "check:database": "node --env-file-if-exists=.env scripts/sqlite-maintenance.mjs check"
