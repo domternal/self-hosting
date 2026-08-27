@@ -192,15 +192,14 @@ budget.
 
 ## Support, contributions and license
 
-This repository is MIT licensed and provided as is: it is a starting point you
-may copy and adapt under that license, not a managed product. The
-`@domternal-pro` packages it installs remain under the
-[Domternal Pro commercial license](https://domternal.dev/license/),
-and running them in production needs a license key. That key belongs to your
-application build, not to these servers: you pass it to `setLicenseKey` where
-your editor starts, and neither service here reads, stores or validates one.
+This repository and both server implementations are MIT licensed and provided
+as is: they are a starting point you may copy and adapt under that license, not
+a managed product. Neither server installs a Domternal Pro package, and neither
+server needs, reads, stores or validates a Domternal Pro license key. Commercial
+activation belongs only to the separate Domternal Pro editor packages in the
+application that imports them, including guarded headless use.
 [Installation and licensing](https://domternal.dev/v1/pro/licensing/) covers
-where it goes and how offline validation works. See [SUPPORT.md](./SUPPORT.md)
+browser and headless initialization and how offline validation works. See [SUPPORT.md](./SUPPORT.md)
 for help and defect reporting, [CONTRIBUTING.md](./CONTRIBUTING.md) before
 proposing a change, and [SECURITY.md](./SECURITY.md) for private vulnerability
 reporting.
