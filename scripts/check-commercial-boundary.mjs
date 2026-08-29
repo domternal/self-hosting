@@ -89,10 +89,25 @@ function completeDmpKeys(source) {
           typeof payload.i === 'string' &&
           typeof payload.l === 'string' &&
           typeof payload.b === 'string' &&
+          typeof payload.c === 'string' &&
           typeof payload.e === 'string' &&
-          (payload.f === null || typeof payload.f === 'string') &&
+          typeof payload.g === 'boolean' &&
           typeof payload.n === 'string';
-        if (!isLegacyShape && !isCurrentNonCommercialShape && !isCurrentCommercialShape) {
+        const isPrelaunchCommercialShape =
+          expectedVersion === 2 &&
+          payload.t === 'commercial' &&
+          typeof payload.i === 'string' &&
+          typeof payload.l === 'string' &&
+          typeof payload.b === 'string' &&
+          (payload.f === null || typeof payload.f === 'string') &&
+          typeof payload.e === 'string' &&
+          typeof payload.n === 'string';
+        if (
+          !isLegacyShape &&
+          !isCurrentNonCommercialShape &&
+          !isCurrentCommercialShape &&
+          !isPrelaunchCommercialShape
+        ) {
           continue;
         }
         if (!seen.has(match[0])) {

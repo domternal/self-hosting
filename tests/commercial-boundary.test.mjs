@@ -63,10 +63,21 @@ function completeKey(version = 2, kind = 'evaluation') {
             i: '1'.repeat(32),
             l: 'domternal-pro',
             b: '2026-08-01',
+            c: '2027-08-16',
             e: '2027-08-30',
-            f: null,
+            g: false,
             n: '2'.repeat(32),
           }
+        : kind === 'commercial-prelaunch'
+          ? {
+              t: 'commercial',
+              i: '4'.repeat(32),
+              l: 'domternal-pro',
+              b: '2026-08-01',
+              f: null,
+              e: '2027-08-30',
+              n: '5'.repeat(32),
+            }
         : {
             t: kind,
             e: '2099-12-31',
@@ -199,6 +210,7 @@ test('rejects complete DMP1 and DMP2 keys in every text surface', async (t) => {
     ['README.md', `Accidental customer key: ${completeKey(1)}\n`],
     ['collab-server/deployment.notes', `${completeKey(2)}\n`],
     ['collab-server/commercial.notes', `${completeKey(2, 'commercial')}\n`],
+    ['collab-server/prelaunch-commercial.notes', `${completeKey(2, 'commercial-prelaunch')}\n`],
     [
       'ai-proxy/package.json',
       `${JSON.stringify({ name: 'ai-proxy', private: true, copiedKey: completeKey(2) })}\n`,
