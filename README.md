@@ -173,9 +173,11 @@ Each service isolates what you must replace in clearly marked spots:
   `isPermissiveStarter` marker is in place, unless
   `COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS=1` explicitly declares an
   intentional single-tenant/global-token model; deleting the marker with the
-  starter body is what retires both that refusal and the opt-in. Persistence is
-  not on this list: SQLite is production-fine for one process; use a shared
-  database when you scale horizontally.
+  starter body is what retires both that refusal and the opt-in. Persistence
+  still needs an application-specific review: SQLite can suit one process when
+  its workload, concurrency, durability, backup and recovery requirements have
+  been validated; use a shared database when you scale horizontally or exceed
+  those limits.
 - **`ai-proxy`**: the caller check in `src/create-proxy.mjs` (swap the static token list for your session check).
 
 Replace the token checks first. A static token list reaches the browser, so any user can read one out and use it outside your app, and withdrawing it cuts off everyone at once. Both services refuse to start with placeholder tokens unless `NODE_ENV` is exactly `development`, so a forgotten `change-me` fails loudly instead of shipping, including on a host that sets no `NODE_ENV` at all.
