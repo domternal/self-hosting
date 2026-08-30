@@ -132,7 +132,7 @@ jobs:
         working-directory: collab-server
         run: npm test
 
-      - name: Verify deployed artifacts, notices and native SQLite
+      - name: Verify deployed artifacts, dependency licenses and native SQLite
         run: node collab-server/scripts/check-artifacts.mjs collab-server
 
       - name: Exercise WAL-safe SQLite maintenance

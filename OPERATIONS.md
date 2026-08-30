@@ -412,7 +412,7 @@ WAL and SHM files for recovery, then restore into a fresh isolated volume.
 
 ## Upgrade and rollback
 
-1. Read release notes and dependency/lock changes. Never hand-edit the lock.
+1. Before the first tagged release, choose and record the full trusted commit SHA. After tagged releases begin, read the release notes and dependency or lock changes. Never hand-edit the lock.
 2. Create and verify a backup as above.
 3. Record the current Git revision with `git rev-parse HEAD`.
 4. Fetch the desired trusted revision and review its diff before switching.

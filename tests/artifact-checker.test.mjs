@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -29,6 +30,7 @@ function fixture() {
   for (const [name, version] of Object.entries(EXACT_RUNTIME_DEPENDENCIES)) {
     lockPackages[`node_modules/${name}`] = {
       version,
+      license: 'MIT',
       resolved: `https://registry.npmjs.org/${name}/-/${name.split('/').at(-1)}-${version}.tgz`,
       integrity: `sha512-${Buffer.alloc(64, 9).toString('base64')}`,
     };
@@ -61,18 +63,112 @@ function fixture() {
   }
   for (const [name, version] of Object.entries(EXACT_RUNTIME_DEPENDENCIES)) {
     const packageRoot = join(root, 'node_modules', ...name.split('/'));
-    json(join(packageRoot, 'package.json'), { name, version });
+    json(join(packageRoot, 'package.json'), { name, version, license: 'MIT' });
+    write(join(packageRoot, 'LICENSE'), 'MIT fixture\n');
   }
   const sqliteRoot = join(root, 'node_modules', 'better-sqlite3');
-  json(join(sqliteRoot, 'package.json'), { name: 'better-sqlite3', version: '12.11.1' });
   write(join(sqliteRoot, 'build', 'Release', 'better_sqlite3.node'), 'fixture');
   return root;
 }
 
-test('accepts an exact, self-contained MIT runtime with native SQLite', () => {
+function readJson(path) {
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+function setPackageLicense(root, name, license) {
+  const packagePath = join(root, 'node_modules', ...name.split('/'), 'package.json');
+  const manifest = readJson(packagePath);
+  if (license === undefined) delete manifest.license;
+  else manifest.license = license;
+  json(packagePath, manifest);
+
+  const lockPath = join(root, 'package-lock.json');
+  const lock = readJson(lockPath);
+  if (license === undefined) delete lock.packages[`node_modules/${name}`].license;
+  else lock.packages[`node_modules/${name}`].license = license;
+  json(lockPath, lock);
+}
+
+function addProductionPackage(root, { name, version, license }) {
+  const lockPath = join(root, 'package-lock.json');
+  const lock = readJson(lockPath);
+  lock.packages[`node_modules/${name}`] = {
+    version,
+    license,
+    resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`,
+    integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
+  };
+  json(lockPath, lock);
+
+  const packageRoot = join(root, 'node_modules', name);
+  json(join(packageRoot, 'package.json'), { name, version, license });
+  write(join(packageRoot, 'LICENSE'), `${license}\n`);
+}
+
+test('accepts an exact runtime with reviewed licenses, notices and native SQLite', () => {
   const root = fixture();
   try {
     assert.deepEqual(runtimeArtifactProblems(root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('accepts NOTICE as the deployed license notice for a production package', () => {
+  const root = fixture();
+  try {
+    const packageRoot = join(root, 'node_modules', 'yjs');
+    rmSync(join(packageRoot, 'LICENSE'));
+    write(join(packageRoot, 'NOTICE'), 'MIT notice fixture\n');
+    assert.deepEqual(runtimeArtifactProblems(root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects missing license metadata in an installed production package', () => {
+  const root = fixture();
+  try {
+    setPackageLicense(root, 'yjs', undefined);
+    assert.ok(
+      runtimeArtifactProblems(root).some((problem) =>
+        problem.includes('yjs@13.6.32 has no valid string license metadata')
+      )
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a production package without a deployed license or notice file', () => {
+  const root = fixture();
+  try {
+    rmSync(join(root, 'node_modules', 'yjs', 'LICENSE'));
+    assert.ok(
+      runtimeArtifactProblems(root).some((problem) =>
+        problem.includes('yjs@13.6.32 has no top-level license or notice file')
+      )
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a new unapproved license in the transitive production closure', () => {
+  const root = fixture();
+  try {
+    addProductionPackage(root, {
+      name: 'transitive-runtime-helper',
+      version: '1.2.3',
+      license: 'GPL-3.0-only',
+    });
+    assert.ok(
+      runtimeArtifactProblems(root).some((problem) =>
+        problem.includes(
+          'transitive-runtime-helper@1.2.3 uses unapproved license expression "GPL-3.0-only"'
+        )
+      )
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

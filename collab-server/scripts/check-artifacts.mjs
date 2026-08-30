@@ -13,6 +13,28 @@ import { EXACT_RUNTIME_DEPENDENCIES } from './runtime-dependencies.mjs';
 
 export { EXACT_RUNTIME_DEPENDENCIES } from './runtime-dependencies.mjs';
 
+/**
+ * Exact review ledger for licenses in the deployed production closure.
+ *
+ * Keep expressions byte-for-byte aligned with installed package metadata. A
+ * dependency update that introduces even another permissive license must stop
+ * here until a maintainer reviews that license and deliberately extends this
+ * list.
+ */
+export const APPROVED_RUNTIME_LICENSE_EXPRESSIONS = Object.freeze([
+  '0BSD',
+  'Apache-2.0',
+  'BSD-3-Clause',
+  'ISC',
+  'MIT',
+  '(BSD-2-Clause OR MIT OR Apache-2.0)',
+  '(MIT OR WTFPL)',
+]);
+
+const approvedRuntimeLicenses = new Set(APPROVED_RUNTIME_LICENSE_EXPRESSIONS);
+const licenseOrNoticeName =
+  /^(?:licen[cs]e|copying|notice|copyright(?:notice)?)(?:$|[._-])/iu;
+
 function readJson(path, problems) {
   try {
     return JSON.parse(readFileSync(path, 'utf8'));
@@ -42,16 +64,121 @@ function requireRegularFileWithin(parent, path, label, problems) {
     const metadata = lstatSync(path);
     if (!metadata.isFile()) {
       problems.push(`${label} is not a regular file`);
-      return;
+      return false;
     }
     if (metadata.size === 0) {
       problems.push(`${label} is empty`);
-      return;
+      return false;
     }
     const real = realpathSync(path);
-    if (!isInside(parent, real)) problems.push(`${label} resolves outside its deployed directory`);
+    if (!isInside(parent, real)) {
+      problems.push(`${label} resolves outside its deployed directory`);
+      return false;
+    }
+    return true;
   } catch (error) {
     problems.push(`${label} is missing or unreadable: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+function productionPackageEntries(lock, problems) {
+  const packages = lock?.packages;
+  if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) {
+    problems.push('package-lock.json has no package inventory for license verification');
+    return [];
+  }
+  const production = [];
+  for (const [path, entry] of Object.entries(packages)) {
+    if (!path.startsWith('node_modules/')) continue;
+    if (path.includes('/../') || path.endsWith('/..')) {
+      problems.push(`${path} is not a valid deployed package path`);
+      continue;
+    }
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      problems.push(`${path} package-lock entry is not an object`);
+      continue;
+    }
+    if (entry.dev !== true) production.push([path, entry]);
+  }
+  return production;
+}
+
+function licenseNoticeFiles(packageRoot, packageLabel, problems) {
+  let entries;
+  try {
+    entries = readdirSync(packageRoot, { withFileTypes: true });
+  } catch (error) {
+    problems.push(
+      `${packageLabel} directory cannot be inspected for license files: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return;
+  }
+  const candidates = entries.filter((entry) => licenseOrNoticeName.test(entry.name));
+  if (candidates.length === 0) {
+    problems.push(`${packageLabel} has no top-level license or notice file`);
+    return;
+  }
+  let validFiles = 0;
+  for (const candidate of candidates) {
+    if (
+      requireRegularFileWithin(
+        packageRoot,
+        join(packageRoot, candidate.name),
+        `${packageLabel} ${candidate.name}`,
+        problems
+      )
+    ) {
+      validFiles += 1;
+    }
+  }
+  if (validFiles === 0) problems.push(`${packageLabel} has no valid license or notice file`);
+}
+
+function productionDependencyLicenseProblems(root, nodeModules, lock, problems) {
+  for (const [lockPath, lockEntry] of productionPackageEntries(lock, problems)) {
+    const requestedPackageRoot = join(root, ...lockPath.split('/'));
+    let packageRoot;
+    try {
+      const metadata = lstatSync(requestedPackageRoot);
+      if (!metadata.isDirectory()) {
+        problems.push(`${lockPath} is not a real deployed package directory`);
+        continue;
+      }
+      packageRoot = realpathSync(requestedPackageRoot);
+      if (!isInside(nodeModules, packageRoot)) {
+        problems.push(`${lockPath} resolves outside the deployed node_modules tree`);
+        continue;
+      }
+    } catch (error) {
+      if (lockEntry.optional === true) continue;
+      problems.push(
+        `${lockPath} is missing from the deployed production closure: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      continue;
+    }
+
+    const manifest = readJson(join(packageRoot, 'package.json'), problems);
+    if (manifest === null) continue;
+    const packageLabel = `${
+      typeof manifest.name === 'string' && manifest.name !== '' ? manifest.name : lockPath
+    }@${typeof manifest.version === 'string' && manifest.version !== '' ? manifest.version : 'unknown'}`;
+    const license = manifest.license;
+    if (typeof license !== 'string' || license.trim() === '') {
+      problems.push(`${packageLabel} has no valid string license metadata`);
+    } else if (!approvedRuntimeLicenses.has(license)) {
+      problems.push(`${packageLabel} uses unapproved license expression ${JSON.stringify(license)}`);
+    }
+    if (lockEntry.license !== license) {
+      problems.push(
+        `${packageLabel} installed license ${JSON.stringify(license)} does not match package-lock.json ${JSON.stringify(lockEntry.license)}`
+      );
+    }
+    licenseNoticeFiles(packageRoot, packageLabel, problems);
   }
 }
 
@@ -197,6 +324,10 @@ export function runtimeArtifactProblems(runtimeRoot) {
         );
       }
     }
+
+    if (lock !== null) {
+      productionDependencyLicenseProblems(root, nodeModules, lock, problems);
+    }
   }
 
   for (const required of [
@@ -252,7 +383,9 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  console.log('[collab-artifacts] OK - frozen MIT runtime and native binding verified');
+  console.log(
+    '[collab-artifacts] OK - frozen permissively licensed runtime, notices and native binding verified'
+  );
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
