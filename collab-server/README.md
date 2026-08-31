@@ -153,4 +153,4 @@ Going to production takes three steps, and the last one is the part people miss:
   reverse proxy. The websocket frame and REST body ceilings protect one request
   or frame; they do not cap memory consumed by many authorized connections.
 - For horizontal scaling, add `@hocuspocus/extension-redis` and put the processes behind a sticky-session load balancer. Point it at **Valkey** (or another open Redis-protocol server): Redis 8+ itself is tri-licensed and one of its licenses is AGPL, so name the server you deploy deliberately.
-- Do not build on `@y/hub` (the yjs-org production server) without reading its license: it is AGPL/dual-licensed, unlike the MIT Hocuspocus stack used here.
+- Do not build on `@y/hub` (the yjs-org production server) without reading its license: it is AGPL/dual-licensed, unlike the MIT-licensed direct Hocuspocus packages and permissively licensed dependency stack used here.

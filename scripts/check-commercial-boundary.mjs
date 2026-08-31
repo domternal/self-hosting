@@ -68,11 +68,45 @@ function completeDmpKeys(source) {
           typeof payload !== 'object' ||
           Array.isArray(payload) ||
           payload.v !== expectedVersion ||
-          typeof payload.k !== 'number' ||
-          typeof payload.o !== 'string' ||
-          typeof payload.p !== 'string' ||
-          typeof payload.s !== 'number' ||
-          typeof payload.e !== 'string'
+          typeof payload.k !== 'number'
+        ) {
+          continue;
+        }
+        const isLegacyShape =
+          expectedVersion === 1 &&
+          typeof payload.o === 'string' &&
+          typeof payload.p === 'string' &&
+          typeof payload.s === 'number' &&
+          typeof payload.e === 'string';
+        const isCurrentNonCommercialShape =
+          expectedVersion === 2 &&
+          (payload.t === 'evaluation' || payload.t === 'internal') &&
+          typeof payload.e === 'string' &&
+          typeof payload.n === 'string';
+        const isCurrentCommercialShape =
+          expectedVersion === 2 &&
+          payload.t === 'commercial' &&
+          typeof payload.i === 'string' &&
+          typeof payload.l === 'string' &&
+          typeof payload.b === 'string' &&
+          typeof payload.c === 'string' &&
+          typeof payload.e === 'string' &&
+          typeof payload.g === 'boolean' &&
+          typeof payload.n === 'string';
+        const isPrelaunchCommercialShape =
+          expectedVersion === 2 &&
+          payload.t === 'commercial' &&
+          typeof payload.i === 'string' &&
+          typeof payload.l === 'string' &&
+          typeof payload.b === 'string' &&
+          (payload.f === null || typeof payload.f === 'string') &&
+          typeof payload.e === 'string' &&
+          typeof payload.n === 'string';
+        if (
+          !isLegacyShape &&
+          !isCurrentNonCommercialShape &&
+          !isCurrentCommercialShape &&
+          !isPrelaunchCommercialShape
         ) {
           continue;
         }
