@@ -7,6 +7,10 @@ ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 WORKDIR /app
 
+# The pinned base digest still ships openssl 3.5.7-r0, and CVE-2026-14456 is
+# fixed in 3.5.8-r0. Upgrade openssl until a refreshed base digest covers it.
+RUN apk upgrade --no-cache libcrypto3 libssl3
+
 # Package managers are build-time tools. Remove them from the runtime image so
 # their unused dependency trees cannot add vulnerabilities or executable tools.
 RUN rm -rf \
