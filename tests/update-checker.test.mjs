@@ -344,11 +344,11 @@ test('CodeQL follows the v4 action channel instead of CodeQL bundle releases', a
 test('actionlint and Trivy tool checks compare stable upstream releases', async () => {
   const sha = 'f'.repeat(40);
   const mock = routes([
-    ...githubReleaseRoutes('aquasecurity/trivy', 'v0.72.0', sha),
+    ...githubReleaseRoutes('aquasecurity/trivy', 'v0.74.0', sha),
     ...githubReleaseRoutes('rhysd/actionlint', 'v1.7.13', sha),
   ]);
   const rows = await checkToolUpdates(new Map([
-    ['aquasecurity/trivy', '0.72.0'],
+    ['aquasecurity/trivy', '0.74.0'],
     ['rhysd/actionlint', '1.7.12'],
   ]), { fetchImpl: mock.fetchImpl });
   assert.deepEqual(rows.map((row) => row.status), ['current', 'update']);
@@ -371,7 +371,7 @@ jobs:
       - uses: owner/action/subpath@${'b'.repeat(40)} # v1
       - uses: aquasecurity/trivy-action@${'c'.repeat(40)}
         with:
-          version: v0.72.0
+          version: v0.74.0
         env:
           ACTIONLINT_VERSION: 1.7.12
 `);
@@ -384,7 +384,7 @@ jobs:
   ]);
   assert.deepEqual([...inventory.tools], [
     ['rhysd/actionlint', '1.7.12'],
-    ['aquasecurity/trivy', '0.72.0'],
+    ['aquasecurity/trivy', '0.74.0'],
   ]);
 });
 
@@ -400,7 +400,7 @@ steps:
   - uses: owner/action@v1
   - uses: aquasecurity/trivy-action@${'c'.repeat(40)}
     with:
-      version: v0.72.0
+      version: v0.74.0
     env:
       ACTIONLINT_VERSION: 1.7.12
 `);

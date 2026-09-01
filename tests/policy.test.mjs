@@ -16,9 +16,13 @@ import {
   dependencyUpdateWorkflowProblems,
   finalDockerStageUserProblems,
   issueRoutingProblems,
+  releaseStateProblems,
+  releaseTagProblems,
+  releaseTagWorkflowProblems,
   requiredWorkflowEventProblems,
   rootPermissionProblems,
   runtimePackageManagerProblems,
+  trivyMatrixCoverageProblems,
   workflowTriggerProblems,
 } from '../scripts/check-policy.mjs';
 import {
@@ -137,6 +141,168 @@ test('dependency update script remains GET-only and writes only its job summary'
       )
     ).join('\n'),
     /may only read repository files/u
+  );
+});
+
+test('release tags run the full CI with an early fail-closed preflight', () => {
+  assert.deepEqual(releaseTagWorkflowProblems(ciWorkflow), []);
+  for (const [name, changed] of [
+    [
+      'tag trigger removed',
+      ciWorkflow.replace("    tags:\n      - 'v[0-9]*.[0-9]*.[0-9]*'\n", ''),
+    ],
+    [
+      'extra tag trigger',
+      ciWorkflow.replace(
+        "      - 'v[0-9]*.[0-9]*.[0-9]*'\n",
+        "      - 'v[0-9]*.[0-9]*.[0-9]*'\n      - 'release-*'\n"
+      ),
+    ],
+    [
+      'shallow checkout',
+      ciWorkflow.replace('          fetch-depth: 0', '          fetch-depth: 1'),
+    ],
+    [
+      'branch-wide preflight',
+      ciWorkflow.replace("        if: github.ref_type == 'tag'\n", ''),
+    ],
+    [
+      'preflight removed',
+      ciWorkflow.replace(
+        'run: node scripts/check-policy.mjs --release-tag "$GITHUB_REF_NAME"',
+        'run: echo skipped'
+      ),
+    ],
+    [
+      'container tag bypass',
+      ciWorkflow.replace(
+        '  containers:\n    name:',
+        "  containers:\n    if: github.ref_type != 'tag'\n    name:"
+      ),
+    ],
+  ]) {
+    assert.notEqual(changed, ciWorkflow, `${name} mutation must change the fixture`);
+    assert.notDeepEqual(releaseTagWorkflowProblems(changed), [], name);
+  }
+});
+
+test('release tags use stable vX.Y.Z syntax', () => {
+  for (const tag of ['v0.0.0', 'v1.0.0', 'v12.34.56']) {
+    assert.deepEqual(releaseTagProblems(tag), [], tag);
+  }
+  for (const tag of ['1.0.0', 'v01.0.0', 'v1.0', 'v1.0.0-rc.1', 'v1.0.0+build']) {
+    assert.notDeepEqual(releaseTagProblems(tag), [], tag);
+  }
+});
+
+test('local release verification accepts only clean current main under exact Node', () => {
+  const head = 'a'.repeat(40);
+  assert.deepEqual(
+    releaseStateProblems({
+      tag: 'v1.0.0',
+      nodeVersion: '22.23.2',
+      status: '',
+      head,
+      originMain: head,
+      tagTarget: null,
+    }),
+    []
+  );
+  for (const [name, override] of [
+    ['Node mismatch', { nodeVersion: '22.23.1' }],
+    ['dirty tree', { status: ' M README.md' }],
+    ['stale main', { originMain: 'b'.repeat(40) }],
+    ['tag collision', { tagTarget: 'c'.repeat(40) }],
+  ]) {
+    const problems = releaseStateProblems({
+      tag: 'v1.0.0',
+      nodeVersion: '22.23.2',
+      status: '',
+      head,
+      originMain: head,
+      tagTarget: null,
+      ...override,
+    });
+    assert.notDeepEqual(problems, [], name);
+  }
+});
+
+test('GitHub release verification binds the event ref, SHA and checked-out tag', () => {
+  const head = 'a'.repeat(40);
+  assert.deepEqual(
+    releaseStateProblems({
+      tag: 'v1.0.0',
+      nodeVersion: '22.23.2',
+      status: '',
+      head,
+      originMain: head,
+      tagTarget: head,
+      tagObjectType: 'tag',
+      githubActions: true,
+      githubRefType: 'tag',
+      githubRefName: 'v1.0.0',
+      githubSha: head,
+    }),
+    []
+  );
+  assert.match(
+    releaseStateProblems({
+      tag: 'v1.0.0',
+      nodeVersion: '22.23.2',
+      status: '',
+      head,
+      originMain: head,
+      tagTarget: head,
+      tagObjectType: 'commit',
+    }).join('\n'),
+    /annotated, not lightweight/u
+  );
+  assert.match(
+    releaseStateProblems({
+      tag: 'v1.0.0',
+      nodeVersion: '22.23.2',
+      status: '',
+      head,
+      originMain: head,
+      tagTarget: null,
+      githubActions: true,
+      githubRefType: 'branch',
+      githubRefName: 'main',
+      githubSha: 'b'.repeat(40),
+    }).join('\n'),
+    /tag ref[\s\S]*tag name[\s\S]*release SHA[\s\S]*tag is missing/u
+  );
+});
+
+test('the policy CLI rejects invalid release modes and tags', () => {
+  const script = resolve(root, 'scripts/check-policy.mjs');
+  for (const [arguments_, expected] of [
+    [['--unknown'], /usage:/u],
+    [['--release-tag', 'v01.0.0'], /stable vX\.Y\.Z/u],
+  ]) {
+    const result = spawnSync(process.execPath, [script, ...arguments_], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, expected);
+  }
+});
+
+test('Trivy scans every image on both architecture matrix entries', () => {
+  assert.deepEqual(trivyMatrixCoverageProblems(ciWorkflow), []);
+  assert.match(
+    trivyMatrixCoverageProblems(
+      ciWorkflow.replace(
+        '      - name: Informative full collab vulnerability inventory\n',
+        "      - name: Informative full collab vulnerability inventory\n        if: matrix.architecture == 'amd64'\n"
+      )
+    ).join('\n'),
+    /both architecture matrix entries/u
+  );
+  assert.match(
+    trivyMatrixCoverageProblems(ciWorkflow.replace('version: v0.74.0', 'version: v0.73.0')).join('\n'),
+    /scanner v0\.74\.0/u
   );
 });
 

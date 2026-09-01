@@ -27,7 +27,7 @@ npm ci --ignore-scripts --strict-peer-deps
 npm rebuild better-sqlite3 --build-from-source
 cp .env.example .env   # then edit COLLAB_TOKENS
 chmod 600 .env
-# For a deliberate single-tenant evaluation only, also set:
+# For a deliberate single-tenant/global-token deployment only, also set:
 # COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS=1
 npm start
 ```

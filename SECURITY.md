@@ -21,7 +21,7 @@ Please include:
 - A description of the vulnerability and its impact
 - Steps to reproduce, ideally with a minimal example
 - Whether it affects a server in this repository or an installed package,
-  and which version
+  and the release tag or full Git commit SHA
 
 Security reports are read with priority. Please allow time for a fix to
 reach deployments before any public disclosure.

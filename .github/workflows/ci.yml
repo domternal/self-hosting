@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   pull_request:
     branches: [main]
   merge_group: {}
@@ -39,6 +41,7 @@ jobs:
       - name: Checkout without persisting credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Use the supported Node release
@@ -46,6 +49,10 @@ jobs:
         with:
           node-version: 22.23.2
           package-manager-cache: false
+
+      - name: Verify the immutable source tag
+        if: github.ref_type == 'tag'
+        run: node scripts/check-policy.mjs --release-tag "$GITHUB_REF_NAME"
 
       - name: Require the committed deployment lock
         run: node scripts/require-lockfile.mjs
@@ -190,8 +197,7 @@ jobs:
         run: node tests/container-e2e.mjs --skip-build
 
       - name: Informative full collab vulnerability inventory
-        if: matrix.architecture == 'amd64'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.72.0 scanner
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.COLLAB_IMAGE_REF }}
           format: table
@@ -199,11 +205,10 @@ jobs:
           ignore-unfixed: false
           vuln-type: os,library
           severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
-          version: v0.72.0
+          version: v0.74.0
 
       - name: Block fixable high or critical collab vulnerabilities
-        if: matrix.architecture == 'amd64'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.72.0 scanner
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.COLLAB_IMAGE_REF }}
           format: table
@@ -211,11 +216,10 @@ jobs:
           ignore-unfixed: true
           vuln-type: os,library
           severity: HIGH,CRITICAL
-          version: v0.72.0
+          version: v0.74.0
 
       - name: Informative full AI proxy vulnerability inventory
-        if: matrix.architecture == 'amd64'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.72.0 scanner
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.AI_IMAGE_REF }}
           format: table
@@ -223,11 +227,10 @@ jobs:
           ignore-unfixed: false
           vuln-type: os,library
           severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
-          version: v0.72.0
+          version: v0.74.0
 
       - name: Block fixable high or critical AI proxy vulnerabilities
-        if: matrix.architecture == 'amd64'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.72.0 scanner
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.AI_IMAGE_REF }}
           format: table
@@ -235,7 +238,7 @@ jobs:
           ignore-unfixed: true
           vuln-type: os,library
           severity: HIGH,CRITICAL
-          version: v0.72.0
+          version: v0.74.0
 
       - name: Always remove ephemeral containers and volumes
         if: always()

@@ -57,10 +57,14 @@ secrets must contain at least 32 UTF-8 bytes; bearer tokens must also be
 header-safe and no larger than 4096 bytes. `openssl rand -hex 32` satisfies
 every token rule. Errors never print a secret value.
 
-For a zero-downtime caller-token rotation, put the old and new tokens in the
-same comma-separated source file, recreate that service, move clients to the
-new token, remove the old token, then recreate the service again. Recreating
-remounts the current host file even when a secret manager replaces it atomically:
+For an overlap rotation that avoids abruptly revoking current callers, put the
+old and new tokens in the same comma-separated source file, recreate that
+service, move clients to the new token, remove the old token, then recreate the
+service again. Each `--force-recreate` restarts the shipped singleton and can
+briefly interrupt requests or make clients reconnect. True zero-downtime
+rotation requires multiple service instances or a gateway that can drain one
+instance while another remains available. Recreating remounts the current host
+file even when a secret manager replaces it atomically:
 
 ```bash
 docker compose up --detach --force-recreate collab-server
@@ -329,6 +333,11 @@ documented retention schedule. A backup contains document contents, comments,
 versions and metadata in plaintext. Record the application Git revision next to
 it, but never put the backup itself in Git.
 
+The active SQLite database, WAL and SHM files in the Docker volume are also
+plaintext at rest. Use an encrypted host disk or encrypted volume when your
+threat model or policy requires storage encryption; application-level TLS does
+not encrypt files on disk.
+
 The imports below intentionally stream bytes through a non-TTY one-off
 container. Docker copy semantics make a destination inside a container
 [root-owned by default](https://docs.docker.com/reference/cli/docker/container/cp/),
@@ -340,6 +349,7 @@ Verify a copied backup independently:
 
 ```bash
 set -eu
+backup_path='backups/collab-YYYYMMDDTHHMMSSZ.sqlite'
 verify_path="/data/.collab-backup-verify-$(date -u +%Y%m%dT%H%M%SZ)-$$.sqlite"
 docker compose run --rm --no-deps -T \
   --entrypoint sh collab-server \
@@ -402,6 +412,7 @@ retain the unique input while diagnosing it. Remove only that exact path when
 you no longer need it:
 
 ```bash
+restore_input='/data/restore-input-YYYYMMDDTHHMMSSZ-PID.sqlite'
 docker compose run --rm --no-deps --entrypoint rm collab-server \
   -f -- "$restore_input"
 ```
