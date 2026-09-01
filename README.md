@@ -24,18 +24,21 @@ That is a generic relay: fine for trying the editor, not for production. It does
 ## Quick start
 
 Use this repository as a GitHub template (or clone it), then set up each service.
+Run each service in its own terminal, starting from the repository root.
 
 The collaboration server, with the full walkthrough in [`collab-server/README.md`](./collab-server/README.md):
 
 ```bash
-cd collab-server
-npm ci --ignore-scripts --strict-peer-deps
-npm rebuild better-sqlite3 --build-from-source
-cp .env.example .env   # then edit the tokens
-chmod 600 .env
-# Use real random tokens. For an intentional single-tenant deployment, also
-# set COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS=1.
-npm start
+(
+  cd collab-server
+  npm ci --ignore-scripts --strict-peer-deps
+  npm rebuild better-sqlite3 --build-from-source
+  cp .env.example .env   # then edit the tokens
+  chmod 600 .env
+  # Use real random tokens. For an intentional single-tenant deployment, also
+  # set COLLAB_ALLOW_TOKEN_WIDE_DOCUMENT_ACCESS=1.
+  npm start
+)
 ```
 
 `npm ci` is deliberate: `collab-server/package-lock.json` is a deployment
@@ -48,10 +51,12 @@ the same transitive code CI tested and Docker deploys.
 The AI proxy, with the full walkthrough in [`ai-proxy/README.md`](./ai-proxy/README.md):
 
 ```bash
-cd ai-proxy
-cp .env.example .env   # then set UPSTREAM_URL, PROVIDER, PROVIDER_API_KEY and AI_TOKENS
-chmod 600 .env
-npm start
+(
+  cd ai-proxy
+  cp .env.example .env   # then set UPSTREAM_URL, PROVIDER, PROVIDER_API_KEY and AI_TOKENS
+  chmod 600 .env
+  npm start
+)
 ```
 
 Or run both with Docker. Use Docker Engine with a current Docker Compose v2
@@ -115,11 +120,13 @@ docker compose up --build collab-server        # collaboration only
 docker compose up --build                      # collaboration and the AI proxy
 ```
 
-Starting both needs a real provider key in `secrets/provider_api_key`, because
-the AI proxy refuses to start without one outside development and
-`restart: unless-stopped` then retries it for as long as the deployment lives.
-The bootstrap above creates that file empty on purpose, so a collaboration-only
-deployment names its one service instead.
+Starting both with the default hosted-provider configuration needs a real
+provider key in `secrets/provider_api_key`, because the AI proxy refuses to
+start without one outside development and `restart: unless-stopped` then
+retries it for as long as the deployment lives. The bootstrap above creates
+that file empty on purpose, so a collaboration-only deployment names its one
+service instead. A local model configured with `PROVIDER=none` does not need a
+provider key.
 
 The shipped Compose posture is intentionally conservative:
 

@@ -89,7 +89,7 @@ async function authorizeRequest(token) {
 }
 ```
 
-If your app issues JWTs, verify them locally instead and skip the per-request network hop. The import adds a dependency to your copy, which is fine: zero dependencies describes the reference as shipped, not a rule for your fork. `src/create-proxy.mjs` deliberately reads no environment of its own, so take the secret in as an option from `index.mjs` the way every other setting arrives, and keep `process.env` out of the module.
+If your app issues JWTs, verify them locally instead and skip the per-request network hop. Pin the accepted algorithm, issuer and audience, and require an expiry. Checking only the signature is not enough. The import adds a dependency to your copy, which is fine: zero dependencies describes the reference as shipped, not a rule for your fork. `src/create-proxy.mjs` deliberately reads no environment of its own, so take the secret in as an option from `index.mjs` the way every other setting arrives, and keep `process.env` out of the module.
 
 ```js
 // index.mjs reads the environment and hands the secret over, so this
@@ -103,7 +103,12 @@ function authorizeRequestWith(jwtSecret) {
   return async function authorizeRequest(token) {
     if (token === null) return false;
     try {
-      await jwtVerify(token, secret); // signature and expiry
+      await jwtVerify(token, secret, {
+        algorithms: ['HS256'],
+        issuer: 'https://your.app',
+        audience: 'domternal-ai',
+        requiredClaims: ['exp'],
+      });
       return true;
     } catch {
       return false;
@@ -112,7 +117,39 @@ function authorizeRequestWith(jwtSecret) {
 }
 ```
 
-For tokens signed by an identity provider (Auth0 and Clerk issue RS256), verify against their published keys with `createRemoteJWKSet` from the same package instead of a shared secret.
+Replace the example issuer and audience with values fixed by your application.
+Use a separate high-entropy signing secret, keep it server-side and do not use a
+provider API key or caller token as the JWT secret.
+
+For asymmetric tokens issued by an identity provider, use the provider's
+documented HTTPS JWKS URL with `createRemoteJWKSet` from the same package. Keep
+the expected algorithm, issuer, audience and required `exp` claim explicit in
+`jwtVerify`; do not select a JWKS URL or accepted algorithm from untrusted token
+claims. For example:
+
+```js
+import { createRemoteJWKSet, jwtVerify } from 'jose';
+
+const issuer = 'https://your-issuer.example/';
+const jwks = createRemoteJWKSet(
+  new URL('https://your-issuer.example/.well-known/jwks.json'),
+);
+
+async function authorizeRequest(token) {
+  if (token === null) return false;
+  try {
+    await jwtVerify(token, jwks, {
+      algorithms: ['RS256'],
+      issuer,
+      audience: 'your-api-audience',
+      requiredClaims: ['exp'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+```
 
 A replacement owns the whole decision, the `AI_TOKENS` list included: the shipped body is the only code that reads that list, so once it is gone the list decides nothing at request time. The startup guard is a separate thing and still applies. In production the entrypoint refuses to start on an empty `AI_TOKENS` unless `AI_ALLOW_UNAUTHENTICATED=1` states that something else authenticates every request, which a replaced `authorizeRequest` does. So either set that variable and leave `AI_TOKENS` empty, or leave one real random token in it and let your own check ignore it; do not park a placeholder or a short value there, because the placeholder and 32-byte guards still read whatever the list holds. With the shipped function an empty list means the opposite of a closed door: every caller is accepted, which is exactly why that configuration has to be declared.
 
