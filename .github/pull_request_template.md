@@ -26,11 +26,11 @@
 # Self-hosting review
 
 - [ ] This changes only public CI, packaging or documentation.
-- [ ] This affects runtime code mirrored from the Pro source of truth.
+- [ ] This affects shared runtime code mirrored into the Pro integration copy.
 - [ ] A related `domternal/domternal` issue is linked when one exists.
 - [ ] I included no credentials, customer data, databases, backups or private logs.
 - [ ] This does not publicly disclose a vulnerability. Security reports follow `SECURITY.md`.
 
-Maintainers coordinate any required Pro-first implementation before shared
-runtime files are merged here. Contributors do not need private repository
-access.
+Maintainers land shared runtime behavior here first, then synchronize the Pro
+integration mirror and refresh its reviewed mirror manifest before the matching
+Pro change or release. Contributors do not need private repository access.

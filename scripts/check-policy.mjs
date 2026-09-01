@@ -1,10 +1,14 @@
 #!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXACT_RUNTIME_DEPENDENCIES } from '../collab-server/scripts/check-artifacts.mjs';
 
 const NODE_IMAGE_TAG = 'node:22.23.2-alpine3.24';
+const SUPPORTED_NODE_VERSION = '22.23.2';
+const STABLE_RELEASE_TAG = /^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u;
+const COMMIT_SHA = /^[0-9a-f]{40}$/u;
 const RUNTIME_PACKAGE_MANAGER_CLEANUP_INSTRUCTION =
   'RUN rm -rf /opt/yarn-v1.22.22 /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/npm && rm -f /usr/local/bin/corepack /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg';
 const AI_PRODUCTION_START =
@@ -420,6 +424,195 @@ export function dependencyUpdateWorkflowProblems(
   }
   if (/\b(?:git\s+push|gh\s+(?:issue|pr|release)|npm\s+publish|docker\s+push)\b/u.test(text)) {
     problems.push(`${path} must not create, publish or push anything`);
+  }
+  return problems;
+}
+
+export function releaseTagWorkflowProblems(
+  text,
+  path = '.github/workflows/ci.yml'
+) {
+  const problems = [];
+  const lines = text.split(/\r?\n/u);
+  const pushStart = lines.findIndex((line) => line === '  push:');
+  let pushEnd = lines.length;
+  for (let index = pushStart + 1; index < lines.length; index += 1) {
+    if (/^  [a-z_]+:/u.test(lines[index])) {
+      pushEnd = index;
+      break;
+    }
+  }
+  const push = pushStart === -1 ? '' : lines.slice(pushStart, pushEnd).join('\n').trimEnd();
+  const expectedPush = [
+    '  push:',
+    '    branches: [main]',
+    '    tags:',
+    "      - 'v[0-9]*.[0-9]*.[0-9]*'",
+  ].join('\n');
+  if (push !== expectedPush) {
+    problems.push(`${path} push must cover main and the reviewed vX.Y.Z release tag glob`);
+  }
+  const staticPolicy = workflowJobBlock(text, 'static-policy');
+  const dependencyLock = workflowJobBlock(text, 'dependency-lock');
+  const containers = workflowJobBlock(text, 'containers');
+  for (const fragment of [
+    'fetch-depth: 0',
+    'node-version: 22.23.2',
+    "if: github.ref_type == 'tag'",
+    'run: node scripts/check-policy.mjs --release-tag "$GITHUB_REF_NAME"',
+  ]) {
+    requireText(staticPolicy, fragment, path, problems);
+  }
+  if (count(staticPolicy, 'run: node scripts/check-policy.mjs --release-tag "$GITHUB_REF_NAME"') !== 1) {
+    problems.push(`${path} must contain exactly one source release preflight step`);
+  }
+  const preflight = staticPolicy.indexOf(
+    'run: node scripts/check-policy.mjs --release-tag "$GITHUB_REF_NAME"'
+  );
+  const deploymentLock = staticPolicy.indexOf('run: node scripts/require-lockfile.mjs');
+  if (preflight === -1 || deploymentLock === -1 || preflight > deploymentLock) {
+    problems.push(`${path} must verify a release tag before the deployment-lock gate`);
+  }
+  const staticConditions = staticPolicy.match(/^\s+if:\s*.+$/gmu) ?? [];
+  if (staticConditions.length !== 1 || staticConditions[0].trim() !== "if: github.ref_type == 'tag'") {
+    problems.push(`${path} static-policy may condition only the release preflight step`);
+  }
+  if ((dependencyLock.match(/^\s+if:\s*.+$/gmu) ?? []).length !== 0) {
+    problems.push(`${path} dependency-lock must run for every selected release tag`);
+  }
+  const containerConditions = (containers.match(/^\s+if:\s*.+$/gmu) ?? []).map((line) => line.trim());
+  if (containerConditions.length !== 1 || containerConditions[0] !== 'if: always()') {
+    problems.push(`${path} containers may condition only the final cleanup step`);
+  }
+  return problems;
+}
+
+export function releaseTagProblems(tag) {
+  if (typeof tag !== 'string' || !STABLE_RELEASE_TAG.test(tag)) {
+    return ['release tag must be a stable vX.Y.Z version without leading zeroes'];
+  }
+  return [];
+}
+
+export function releaseStateProblems({
+  tag,
+  nodeVersion,
+  status,
+  head,
+  originMain,
+  tagTarget,
+  tagObjectType = null,
+  githubActions = false,
+  githubRefType = '',
+  githubRefName = '',
+  githubSha = '',
+}) {
+  const problems = [...releaseTagProblems(tag)];
+  if (nodeVersion !== SUPPORTED_NODE_VERSION) {
+    problems.push(`release verification requires Node ${SUPPORTED_NODE_VERSION}, received ${nodeVersion}`);
+  }
+  if (status !== '') problems.push('release verification requires a clean working tree');
+  if (!COMMIT_SHA.test(head)) problems.push('HEAD did not resolve to a commit SHA');
+  if (!COMMIT_SHA.test(originMain)) {
+    problems.push('origin/main did not resolve to a commit SHA; fetch the current main branch first');
+  } else if (COMMIT_SHA.test(head) && head !== originMain) {
+    problems.push('release commit must exactly match the fetched origin/main commit');
+  }
+  if (tagTarget !== null && !COMMIT_SHA.test(tagTarget)) {
+    problems.push('release tag did not resolve to a commit SHA');
+  } else if (COMMIT_SHA.test(tagTarget ?? '') && COMMIT_SHA.test(head) && tagTarget !== head) {
+    problems.push('release tag must resolve to the current HEAD commit');
+  }
+  if (tagTarget !== null && tagObjectType !== 'tag') {
+    problems.push('an existing release tag must be annotated, not lightweight');
+  }
+  if (githubActions) {
+    if (githubRefType !== 'tag') problems.push('GitHub release verification must run from a tag ref');
+    if (githubRefName !== tag) problems.push('GitHub tag name does not match the requested release tag');
+    if (githubSha !== head) problems.push('GitHub release SHA does not match the checked-out commit');
+    if (tagTarget === null) problems.push('GitHub release tag is missing from the complete checkout');
+  }
+  return problems;
+}
+
+function releaseGit(root, arguments_, { allowMissing = false } = {}) {
+  const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+  for (const name of [
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_DIR',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_WORK_TREE',
+  ]) {
+    delete env[name];
+  }
+  const result = spawnSync('git', arguments_, { cwd: root, encoding: 'utf8', env });
+  if (result.status === 0) return result.stdout.trim();
+  if (allowMissing) return null;
+  const detail = result.stderr.trim() || result.stdout.trim() || `exit ${String(result.status)}`;
+  throw new Error(`git ${arguments_.join(' ')} failed: ${detail}`);
+}
+
+function releasePreflightProblems(root, tag) {
+  const tagProblems = releaseTagProblems(tag);
+  if (tagProblems.length > 0) return tagProblems;
+  const head = releaseGit(root, ['rev-parse', '--verify', 'HEAD']);
+  const originMain = releaseGit(root, ['rev-parse', '--verify', 'refs/remotes/origin/main']);
+  const status = releaseGit(root, ['status', '--porcelain=v1', '--untracked-files=all']);
+  const tagTarget = releaseGit(root, ['rev-parse', '--verify', `refs/tags/${tag}^{commit}`], {
+    allowMissing: true,
+  });
+  const tagObjectType = releaseGit(root, ['cat-file', '-t', `refs/tags/${tag}`], {
+    allowMissing: true,
+  });
+  return releaseStateProblems({
+    tag,
+    nodeVersion: process.versions.node,
+    status,
+    head,
+    originMain,
+    tagTarget,
+    tagObjectType,
+    githubActions: process.env.GITHUB_ACTIONS === 'true',
+    githubRefType: process.env.GITHUB_REF_TYPE ?? '',
+    githubRefName: process.env.GITHUB_REF_NAME ?? '',
+    githubSha: process.env.GITHUB_SHA ?? '',
+  });
+}
+
+export function trivyMatrixCoverageProblems(
+  text,
+  path = '.github/workflows/ci.yml'
+) {
+  const problems = [];
+  const lines = text.split(/\r?\n/u);
+  const action = 'aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25';
+  const indexes = lines
+    .map((line, index) => (line.includes(`uses: ${action}`) ? index : -1))
+    .filter((index) => index !== -1);
+  if (indexes.length !== 4) {
+    problems.push(`${path} must run exactly four reviewed Trivy scan steps`);
+    return problems;
+  }
+  for (const actionIndex of indexes) {
+    let start = actionIndex;
+    while (start > 0 && !/^\s*-\s+name:/u.test(lines[start])) start -= 1;
+    const stepIndent = indentation(lines[start]);
+    let end = lines.length;
+    for (let index = actionIndex + 1; index < lines.length; index += 1) {
+      if (indentation(lines[index]) === stepIndent && /^\s*-\s+name:/u.test(lines[index])) {
+        end = index;
+        break;
+      }
+    }
+    const step = lines.slice(start, end).join('\n');
+    if (/^\s+if:/mu.test(step)) {
+      problems.push(`${path}:${String(actionIndex + 1)} Trivy must scan both architecture matrix entries`);
+    }
+    if (!/^\s+version:\s*v0\.74\.0\s*$/mu.test(step)) {
+      problems.push(`${path}:${String(actionIndex + 1)} Trivy must use scanner v0.74.0`);
+    }
   }
   return problems;
 }
@@ -994,6 +1187,8 @@ export function collectPolicyProblems(repositoryRoot) {
 
   const ci = read(root, '.github/workflows/ci.yml', problems);
   problems.push(...deploymentLockWorkflowProblems(ci));
+  problems.push(...releaseTagWorkflowProblems(ci));
+  problems.push(...trivyMatrixCoverageProblems(ci));
   for (const fragment of [
     'docker compose',
     'build --check',
@@ -1012,7 +1207,7 @@ export function collectPolicyProblems(repositoryRoot) {
   }
   requireText(
     read(root, '.github/workflows/codeql.yml', problems),
-    'db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28',
+    'cdf488f595d80d6e07e03d4674febd5ab45fa938',
     '.github/workflows/codeql.yml',
     problems
   );
@@ -1058,14 +1253,29 @@ export function collectPolicyProblems(repositoryRoot) {
 
 function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const problems = collectPolicyProblems(root);
+  const arguments_ = process.argv.slice(2);
+  if (arguments_.length !== 0 && (arguments_.length !== 2 || arguments_[0] !== '--release-tag')) {
+    console.error('[self-hosting-policy] FAILED: usage: node scripts/check-policy.mjs [--release-tag vX.Y.Z]');
+    process.exitCode = 1;
+    return;
+  }
+  let problems;
+  try {
+    problems = collectPolicyProblems(root);
+    if (arguments_.length === 2) problems.push(...releasePreflightProblems(root, arguments_[1]));
+  } catch (error) {
+    console.error(`[self-hosting-policy] FAILED: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+    return;
+  }
   if (problems.length > 0) {
     console.error('[self-hosting-policy] FAILED:');
     for (const problem of problems) console.error(`  - ${problem}`);
     process.exitCode = 1;
     return;
   }
-  console.log('[self-hosting-policy] OK - supply-chain, container and CI policy verified');
+  const release = arguments_.length === 2 ? ` and source release ${arguments_[1]}` : '';
+  console.log(`[self-hosting-policy] OK - supply-chain, container and CI policy${release} verified`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) main();
