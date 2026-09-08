@@ -2,7 +2,7 @@
 // process.env in here), so the same module can back the local entrypoint,
 // tests, or a managed multi-tenant deployment.
 import { Server } from '@hocuspocus/server';
-import { SQLite } from '@hocuspocus/extension-sqlite';
+import { SQLite, upsertQuery } from '@hocuspocus/extension-sqlite';
 import * as Y from 'yjs';
 import { documentNameError } from './document-name.mjs';
 import { createThreadGarbageCollector } from './thread-gc.mjs';
@@ -193,10 +193,11 @@ export function createCollabServer({
   };
 
   /**
-   * Seed an unowned, empty document exactly once. The onLoadDocument caller
-   * schedules persistence explicitly because Hocuspocus has not attached its
-   * update listener yet. Calls after loading, such as beforeSync, are persisted
-   * by Hocuspocus's normal update listener.
+   * Persist a seed's CRDT identity before exposing it to the live document.
+   * Build on a separate Y.Doc so beforeSync cannot broadcast uncommitted seed
+   * updates to already-connected viewers. SQLite's synchronous write and the
+   * live apply form one uninterrupted turn; a failed write leaves live state
+   * untouched. Ordinary client edits retain their existing debounced stores.
    *
    * @param {import('yjs').Doc} document
    * @param {string} documentName
@@ -206,13 +207,25 @@ export function createCollabServer({
     const meta = document.getMap(META_MAP);
     const fragment = document.getXmlFragment(COLLAB_FIELD);
     if (!seed || meta.get('seeded') === true || fragment.length !== 0) return false;
-    document.transact(
-      () => {
-        seed(fragment, documentName);
-        meta.set('seeded', true);
-      },
-      { source: 'local', context }
-    );
+    if (!persistence.db) {
+      throw new Error('Cannot seed a document before SQLite persistence is ready.');
+    }
+    const staged = new Y.Doc({ gc: document.gc });
+    try {
+      Y.applyUpdate(staged, Y.encodeStateAsUpdate(document));
+      staged.transact(() => {
+        seed(staged.getXmlFragment(COLLAB_FIELD), documentName);
+        staged.getMap(META_MAP).set('seeded', true);
+      });
+      const update = Y.encodeStateAsUpdate(staged, Y.encodeStateVector(document));
+      persistence.db.prepare(upsertQuery).run({
+        name: documentName,
+        data: Buffer.from(Y.encodeStateAsUpdate(staged)),
+      });
+      Y.applyUpdate(document, update, { source: 'local', context });
+    } finally {
+      staged.destroy();
+    }
     return true;
   }
 
@@ -266,9 +279,9 @@ export function createCollabServer({
     // read-only client starts that load, onLoadDocument correctly leaves the
     // new document untouched, but it will not run again when a writer joins
     // while the viewer remains connected. Seed at the writer's first sync
-    // boundary as well: this runs before sync state is exchanged, is
-    // synchronous and idempotent, and Hocuspocus's update listener is already
-    // attached, so the seed and ownership flag are broadcast and persisted.
+    // boundary as well. Hocuspocus's update listener is already attached here,
+    // so the staged seed must be committed before it reaches the live document
+    // and can be broadcast to the viewer.
     async beforeSync({ document, documentName, context }) {
       if (context?.readOnly === true || isVersionSibling(documentName)) return;
       seedWritableDocument(document, documentName, context);
@@ -315,13 +328,9 @@ export function createCollabServer({
       // through a path that forgot the flag must not get welcome content
       // injected on top of its real body.
       if (seedWritableDocument(document, documentName, context)) {
-        // Hocuspocus attaches its store-scheduling update listener AFTER
-        // this hook, so the seed alone would never reach persistence: a
-        // look-only session would close with nothing debounced, unload
-        // without a row, and the next load would seed AGAIN with fresh
-        // CRDT structs, doubling the welcome content on every reconnect.
-        // Scheduling the cycle here persists the seed and the flag in
-        // every exit order (a close during the debounce flushes it).
+        // The seed is already durable. Hocuspocus attaches its update listener
+        // after this hook, so explicitly schedule the normal store lifecycle
+        // for post-store processing and change notifications as before.
         instance.storeDocumentHooks(document, {
           instance,
           document,
