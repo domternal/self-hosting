@@ -248,3 +248,24 @@ jobs:
             --file docker-compose.yml \
             --file tests/docker-compose.e2e.yml \
             down --volumes --remove-orphans --timeout 35
+
+  build:
+    name: build
+    if: always()
+    needs:
+      - static-policy
+      - dependency-lock
+      - containers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI stage to succeed
+        env:
+          STATIC_POLICY_RESULT: ${{ needs.static-policy.result }}
+          DEPENDENCY_LOCK_RESULT: ${{ needs.dependency-lock.result }}
+          CONTAINERS_RESULT: ${{ needs.containers.result }}
+        run: |
+          printf 'static-policy=%s dependency-lock=%s containers=%s\n' "$STATIC_POLICY_RESULT" "$DEPENDENCY_LOCK_RESULT" "$CONTAINERS_RESULT"
+          test "$STATIC_POLICY_RESULT" = success
+          test "$DEPENDENCY_LOCK_RESULT" = success
+          test "$CONTAINERS_RESULT" = success

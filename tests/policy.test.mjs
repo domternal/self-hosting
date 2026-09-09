@@ -49,6 +49,45 @@ test('the checked-in public template satisfies its infrastructure policy', () =>
   assert.deepEqual(collectPolicyProblems(root), []);
 });
 
+test('the required build status runs after every CI prerequisite', () => {
+  const job = ciWorkflow.match(/^  build:\n(?:(?!^  \S)[\s\S])*/mu)?.[0];
+  assert.ok(job, 'Branch protection requires a build check.');
+  assert.match(job, /^    name: build$/mu);
+  assert.match(job, /^    if: always\(\)$/mu);
+  const needs = job.match(/^    needs:\n((?:      - .+\n)+)/mu)?.[1];
+  assert.ok(needs);
+  assert.deepEqual(needs.trim().split('\n').map(line => line.trim().slice(2)).sort(), [
+    'containers', 'dependency-lock', 'static-policy',
+  ]);
+  assert.doesNotMatch(job, /continue-on-error:/u);
+  const bindings = Object.fromEntries(
+    [...job.matchAll(/^          (\w+): \$\{\{ needs\.([\w-]+)\.result \}\}$/gmu)]
+      .map(([, name, prerequisite]) => [name, prerequisite])
+  );
+  assert.deepEqual(bindings, {
+    STATIC_POLICY_RESULT: 'static-policy',
+    DEPENDENCY_LOCK_RESULT: 'dependency-lock',
+    CONTAINERS_RESULT: 'containers',
+  });
+  const run = job.match(/^        run: \|\n((?:          .+\n?)+)/mu)?.[1];
+  assert.ok(run);
+  const script = run.replace(/^          /gmu, '');
+  const successful = Object.fromEntries(Object.keys(bindings).map(name => [name, 'success']));
+  const execute = results => spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], {
+    env: { ...process.env, ...results },
+    encoding: 'utf8',
+  });
+  const passed = execute(successful);
+  assert.equal(passed.status, 0, passed.stderr);
+  for (const prerequisite of Object.keys(bindings)) {
+    for (const result of ['failure', 'cancelled', 'skipped', '', 'unknown']) {
+      const rejected = execute({ ...successful, [prerequisite]: result });
+      assert.equal(rejected.error, undefined);
+      assert.equal(rejected.status, 1, `${prerequisite}=${result} must block the build check`);
+    }
+  }
+});
+
 test('public Dependabot entries cannot reopen duplicate version update PRs', () => {
   const dependabot = readFileSync(resolve(root, '.github/dependabot.yml'), 'utf8');
   assert.deepEqual(dependabotVersionUpdateProblems(dependabot), []);
