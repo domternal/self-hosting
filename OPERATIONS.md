@@ -14,6 +14,33 @@ invoked as `docker compose`. Legacy `docker-compose` and Podman Compose are not
 validated substitutes. Confirm `docker compose version` and run
 `docker compose config --quiet` after every configuration change.
 
+## Shutdown, persistence and presence
+
+Use `docker compose stop --timeout 30 collab-server` for a normal stop, or send
+SIGINT or SIGTERM when running the Node entrypoint directly. Both signals stop
+new websocket upgrades, drain active REST requests, and close collaboration
+sessions while flushing pending stores. The entrypoint logs `Graceful shutdown
+complete` on success and has a 25-second hard cap. Check the exit status and logs
+before treating a failed or timed-out shutdown as a completed flush.
+
+The reference server commits a new document's initial seed to SQLite before
+clients can receive it. This preserves the seed's CRDT identity through a
+process crash, including when a viewer connects before the first writer.
+Normal edits still use Hocuspocus's two-second debounce, with a ten-second
+maximum debounce while changes continue. Two seconds is therefore not a fixed
+upper bound on unsaved changes. SIGKILL, container OOM termination or a host
+failure can lose edits that have not reached persistence; the seed guarantee
+does not make every keystroke durable. Database and filesystem durability
+settings still matter for host and power failures.
+
+Presence is ephemeral awareness state, separate from the stored document.
+After a server stops, clients must show their connection status and disable
+actions that require a connection. Peer indicators may remain visible until
+disconnect handling or the awareness timeout removes them, especially after an
+abrupt stop. A stale presence indicator is not evidence that a peer is still
+connected or that recent edits have persisted. Reconnect clients to the same
+document name and persistence volume after restart.
+
 ## Secrets
 
 The one-time bootstrap that creates the default host files and generates
