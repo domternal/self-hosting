@@ -39,9 +39,11 @@ ENV NODE_ENV=production \
     SQLITE_PATH=/data/collab.sqlite
 WORKDIR /app
 
-# The pinned base digest still ships openssl 3.5.7-r0, and CVE-2026-14456 is
-# fixed in 3.5.8-r0. Upgrade openssl until a refreshed base digest covers it.
-RUN apk upgrade --no-cache libcrypto3 libssl3
+# The pinned base digest still ships openssl 3.5.7-r0, musl 1.2.6-r2 and
+# zlib 1.3.2-r0. CVE-2026-14456 is fixed in openssl 3.5.8-r0, CVE-2026-107891
+# in musl 1.2.6-r3 and CVE-2026-85091 in zlib 1.3.2-r1. Upgrade these packages
+# until a refreshed base digest covers them.
+RUN apk upgrade --no-cache libcrypto3 libssl3 musl musl-utils zlib
 
 # Package managers are build-time tools. Remove them from the runtime image so
 # their unused dependency trees cannot add vulnerabilities or executable tools.

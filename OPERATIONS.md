@@ -470,6 +470,13 @@ Never upgrade by changing a Docker tag in a running host. The Dockerfiles pin
 both Node tag and digest, the npm lock pins transitive packages, and CI is where
 those bytes are tested together.
 
+When Alpine releases a security fix before a refreshed Node base digest ships
+it, the runtime images upgrade the affected packages with `apk upgrade` on top
+of the pinned digest. The Dockerfile comment above that step lists each package
+and CVE it covers. Rebuild the images after pulling such a change so the running
+containers use the fixed packages; the step is removed once a newer base digest
+includes them.
+
 ## Data deletion
 
 `docker compose down` removes containers and networks but preserves the named
